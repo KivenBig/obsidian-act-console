@@ -1,0 +1,8 @@
+{
+  "id": "act-console",
+  "name": "ACT 工作台",
+  "author": "Kivenbig",
+  "version": "0.2.0",
+  "minAppVersion": "1.0.0",
+  "description": "ACT 笔记系统工作台：以 Action · Card · Time 三层为核心，一个界面看清全局、推进任务、管理知识。"
+}

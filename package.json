@@ -1,0 +1,21 @@
+{
+  "name": "obsidian-act-console",
+  "version": "0.2.0",
+  "description": "ACT workspace dashboard for Obsidian.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node_modules/.bin/esbuild main.ts --bundle --platform=browser --format=cjs --external:obsidian --outfile=main.js --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KivenBig/obsidian-act-console.git"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.28.0",
+    "obsidian": "^1.12.3",
+    "typescript": "^6.0.2"
+  }
+}

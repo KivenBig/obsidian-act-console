@@ -1,0 +1,8 @@
+node_modules/
+dist/
+backups/
+data.json
+.DS_Store
+theme-data.gen.ts
+main.js
+
