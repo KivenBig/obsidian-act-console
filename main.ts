@@ -1202,8 +1202,15 @@ class ActWorkspaceView extends ItemView {
 
     const todayStr = formatDateOnly(new Date());
     let noteCount = 0;
-    for (const child of folder.children) {
-      if (!(child instanceof TFile) || child.extension !== "md") continue;
+    const allFiles: TFile[] = [];
+    const collectFiles = (f: TFolder) => {
+      for (const child of f.children) {
+        if (child instanceof TFile && child.extension === "md") allFiles.push(child);
+        else if (child instanceof TFolder) collectFiles(child);
+      }
+    };
+    collectFiles(folder);
+    for (const child of allFiles) {
       const content = await this.app.vault.cachedRead(child);
       const { tags, deadline } = parseFrontmatterAction(content);
       if (!tags.includes("a-任务笔记")) continue;
