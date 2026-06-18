@@ -1,5 +1,4 @@
 import {
-  AbstractInputSuggest,
   App,
   ButtonComponent,
   ItemView,
@@ -3510,83 +3509,6 @@ export default class ActWorkspacePlugin extends Plugin {
 
 /* ========= SETTINGS TAB ========= */
 
-class FolderSuggest extends AbstractInputSuggest<string> {
-  private folders: string[] = [];
-
-  constructor(app: App, inputEl: HTMLInputElement) {
-    super(app, inputEl);
-    this.folders = this.getAllFolders();
-  }
-
-  private getAllFolders(): string[] {
-    const folders: string[] = [];
-    const recurse = (folder: TFolder) => {
-      if (folder.path) folders.push(folder.path);
-      for (const child of folder.children) {
-        if (child instanceof TFolder) recurse(child);
-      }
-    };
-    recurse(this.app.vault.getRoot());
-    return folders.sort((a, b) => a.localeCompare(b, "zh-CN"));
-  }
-
-  getSuggestions(query: string): string[] {
-    const lower = query.toLowerCase();
-    return this.folders.filter((f) => f.toLowerCase().includes(lower));
-  }
-
-  renderSuggestion(value: string, el: HTMLElement) {
-    el.setText(value);
-  }
-
-  selectSuggestion(value: string) {
-    const el = (this as unknown as { inputEl: HTMLInputElement }).inputEl;
-    const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    if (nativeSet) nativeSet.call(el, value); else el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    this.close();
-  }
-}
-
-class FileSuggest extends AbstractInputSuggest<string> {
-  private files: string[] = [];
-  private extension: string | null;
-
-  constructor(app: App, inputEl: HTMLInputElement, extension?: string) {
-    super(app, inputEl);
-    this.extension = extension ?? null;
-    this.files = this.getAllFiles();
-  }
-
-  private getAllFiles(): string[] {
-    const files = this.app.vault.getFiles();
-    const filtered = this.extension
-      ? files.filter((f) => f.extension === this.extension)
-      : files;
-    return filtered.map((f) => f.path).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  }
-
-  getSuggestions(query: string): string[] {
-    const lower = query.split("#")[0].toLowerCase();
-    return this.files.filter((f) => f.toLowerCase().includes(lower));
-  }
-
-  renderSuggestion(value: string, el: HTMLElement) {
-    el.setText(value);
-  }
-
-  selectSuggestion(value: string) {
-    const el = (this as unknown as { inputEl: HTMLInputElement }).inputEl;
-    const hash = el.value.includes("#") ? el.value.slice(el.value.indexOf("#")) : "";
-    const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    if (nativeSet) nativeSet.call(el, value + hash); else el.value = value + hash;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    this.close();
-  }
-}
-
 class ActWorkspaceSettingTab extends PluginSettingTab {
   plugin: ActWorkspacePlugin;
   private activeTab = 0;
@@ -3712,19 +3634,40 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
     });
   }
 
+  private getVaultFolders(): TFolder[] {
+    const folders: TFolder[] = [];
+    const recurse = (folder: TFolder) => {
+      if (folder.path) folders.push(folder);
+      for (const child of folder.children) {
+        if (child instanceof TFolder) recurse(child);
+      }
+    };
+    recurse(this.app.vault.getRoot());
+    return folders.sort((a, b) => a.path.localeCompare(b.path, "zh-CN"));
+  }
+
   private folderSetting(container: HTMLElement, key: keyof FolderPaths, label: string, desc: string) {
     new Setting(container)
       .setName(label)
       .setDesc(desc)
-      .addText((text) => {
-        text.setPlaceholder(DEFAULT_FOLDERS[key]);
-        text.setValue(this.plugin.settings.folders[key]);
-        text.inputEl.style.width = "100%";
-        new FolderSuggest(this.app, text.inputEl);
-        text.onChange(async (value) => {
-          this.plugin.settings.folders[key] = value;
-          await this.plugin.saveSettings();
-        });
+      .addSearch((search) => {
+        const folders = this.getVaultFolders();
+        const currentValue = this.plugin.settings.folders[key];
+        const listId = `act-folder-${key}`;
+        const optionsEl = container.createEl("datalist");
+        optionsEl.id = listId;
+        for (const folder of folders) {
+          optionsEl.createEl("option", { attr: { value: folder.path } });
+        }
+        search.inputEl.setAttribute("list", listId);
+        search.inputEl.setAttribute("autocomplete", "off");
+        search
+          .setPlaceholder(DEFAULT_FOLDERS[key])
+          .setValue(currentValue)
+          .onChange(async (value) => {
+            this.plugin.settings.folders[key] = value;
+            await this.plugin.saveSettings();
+          });
       });
   }
 
@@ -3830,15 +3773,23 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
           });
           toggle.toggleEl.setAttribute("aria-label", "在前端显示");
         })
-        .addText((text) => {
-          text.setPlaceholder(DEFAULT_FOLDERS[ct.folderKey] || "留空则不显示");
-          text.setValue(this.plugin.settings.folders[ct.folderKey]);
-          text.inputEl.style.width = "100%";
-          new FolderSuggest(this.app, text.inputEl);
-          text.onChange(async (value) => {
-            this.plugin.settings.folders[ct.folderKey] = value;
-            await this.plugin.saveSettings();
-          });
+        .addSearch((search) => {
+          const folders = this.getVaultFolders();
+          const listId = `act-card-folder-${ct.key}`;
+          const optionsEl = container.createEl("datalist");
+          optionsEl.id = listId;
+          for (const folder of folders) {
+            optionsEl.createEl("option", { attr: { value: folder.path } });
+          }
+          search.inputEl.setAttribute("list", listId);
+          search.inputEl.setAttribute("autocomplete", "off");
+          search
+            .setPlaceholder(DEFAULT_FOLDERS[ct.folderKey] || "留空则不显示")
+            .setValue(this.plugin.settings.folders[ct.folderKey])
+            .onChange(async (value) => {
+              this.plugin.settings.folders[ct.folderKey] = value;
+              await this.plugin.saveSettings();
+            });
         });
     }
 
@@ -3858,15 +3809,26 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
     for (const item of dvLabels) {
       new Setting(container)
         .setName(item.label)
-        .addText((text) => {
-          text.setPlaceholder(DEFAULT_DV_PATHS[item.key]);
-          text.setValue(this.plugin.settings.dvPaths[item.key]);
-          text.inputEl.style.width = "100%";
-          new FileSuggest(this.app, text.inputEl, "base");
-          text.onChange(async (value) => {
-            this.plugin.settings.dvPaths[item.key] = value;
-            await this.plugin.saveSettings();
-          });
+        .addSearch((search) => {
+          const files = this.app.vault.getFiles()
+            .filter((f) => f.extension === "base")
+            .map((f) => f.path)
+            .sort((a, b) => a.localeCompare(b, "zh-CN"));
+          const listId = `act-dv-${item.key}`;
+          const optionsEl = container.createEl("datalist");
+          optionsEl.id = listId;
+          for (const filePath of files) {
+            optionsEl.createEl("option", { attr: { value: filePath } });
+          }
+          search.inputEl.setAttribute("list", listId);
+          search.inputEl.setAttribute("autocomplete", "off");
+          search
+            .setPlaceholder(DEFAULT_DV_PATHS[item.key])
+            .setValue(this.plugin.settings.dvPaths[item.key])
+            .onChange(async (value) => {
+              this.plugin.settings.dvPaths[item.key] = value;
+              await this.plugin.saveSettings();
+            });
         });
     }
   }
