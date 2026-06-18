@@ -152,7 +152,9 @@ interface ActWorkspaceSettings {
   folders: FolderPaths;
   dida: DidaSettings;
   updateRepo: string;
+  updateToken: string;
   hideCompletedNotes: boolean;
+  cardVisibility: Record<string, boolean>;
 }
 
 const DEFAULT_FOLDERS: FolderPaths = {
@@ -165,10 +167,10 @@ const DEFAULT_FOLDERS: FolderPaths = {
   cycle: "30-Time/32-12Week-十二周",
   vision: "30-Time/31-Vision-愿景",
   card: "20-Card",
-  newCard: "20-Card/21-NewCard-新卡暂存",
-  indexCard: "20-Card/22-IndexCard-索引卡",
-  bibCard: "20-Card/23-BibCard-阅读卡",
   mainCard: "20-Card/24-MainCard-核心卡",
+  bibCard: "20-Card/23-BibCard-阅读卡",
+  indexCard: "20-Card/22-IndexCard-索引卡",
+  newCard: "",
   thought: "+/ACT闪念",
   thoughtFile: "+/ACT闪念/每日闪念.md"
 };
@@ -186,7 +188,7 @@ const DEFAULT_DV_PATHS: DvPaths = {
   mainCard: "20-Card/知识总览.base#核心卡总览",
   bibCard: "20-Card/知识总览.base#阅读卡总览",
   indexCard: "20-Card/知识总览.base#索引卡总览",
-  newCard: "20-Card/知识总览.base#新卡暂存"
+  newCard: ""
 };
 
 const DEFAULT_PROGRESS_LOG: ProgressLogSettings = {
@@ -206,7 +208,9 @@ const DEFAULT_SETTINGS: ActWorkspaceSettings = {
   folders: { ...DEFAULT_FOLDERS },
   dida: { ...DEFAULT_DIDA },
   updateRepo: "",
-  hideCompletedNotes: false
+  updateToken: "",
+  hideCompletedNotes: false,
+  cardVisibility: { mainCard: true, bibCard: true, indexCard: true, newCard: false }
 };
 
 function pad(n: number): string {
@@ -322,6 +326,9 @@ function shellQuote(input: string): string {
 function toAppleScriptString(input: string): string {
   return `"${input.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
+
+const DEFAULT_UPDATE_REPO = "KivenBig/obsidian-act-console";
+const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 function normalizeGitHubRepo(input: string): string {
   const trimmed = input.trim().replace(/\/+$/, "");
@@ -2196,12 +2203,14 @@ class ActWorkspaceView extends ItemView {
     });
 
     const dvp = this.plugin.settings.dvPaths;
-    const folders = [
-      { path: this.F.mainCard, label: "核心卡", color: "green", dv: dvp.mainCard },
-      { path: this.F.bibCard, label: "阅读卡", color: "purple", dv: dvp.bibCard },
-      { path: this.F.indexCard, label: "索引卡", color: "default", dv: dvp.indexCard },
-      { path: this.F.newCard, label: "新卡暂存", color: "default", dv: dvp.newCard }
+    const vis = this.plugin.settings.cardVisibility ?? {};
+    const allFolders = [
+      { key: "mainCard", path: this.F.mainCard, label: "核心卡", color: "green", dv: dvp.mainCard },
+      { key: "bibCard", path: this.F.bibCard, label: "阅读卡", color: "purple", dv: dvp.bibCard },
+      { key: "indexCard", path: this.F.indexCard, label: "索引卡", color: "default", dv: dvp.indexCard },
+      { key: "newCard", path: this.F.newCard, label: "新卡暂存", color: "default", dv: dvp.newCard }
     ];
+    const folders = allFolders.filter((f) => vis[f.key] !== false && f.path);
 
     const stats = section.createDiv({ cls: "act-analytics-platforms" });
     for (const f of folders) {
@@ -3430,12 +3439,29 @@ export default class ActWorkspacePlugin extends Plugin {
     return false;
   }
 
+  private lastUpdateCheck = 0;
+
+  private getUpdateRepo(): string {
+    return normalizeGitHubRepo(this.settings.updateRepo) || DEFAULT_UPDATE_REPO;
+  }
+
+  private getUpdateHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { "Accept": "application/vnd.github.v3+json", "User-Agent": "act-workspace" };
+    const token = this.settings.updateToken?.trim();
+    if (token) headers["Authorization"] = `token ${token}`;
+    return headers;
+  }
+
   async checkForUpdate(): Promise<{ hasUpdate: boolean; latest: string; current: string }> {
-    const repo = normalizeGitHubRepo(this.settings.updateRepo ?? "");
-    if (!repo) throw new Error("未配置 GitHub 仓库地址");
+    const now = Date.now();
+    if (now - this.lastUpdateCheck < UPDATE_CHECK_INTERVAL_MS) {
+      throw new Error("检查过于频繁，请稍后再试");
+    }
+    this.lastUpdateCheck = now;
+    const repo = this.getUpdateRepo();
     const resp = await requestUrl({
       url: `https://api.github.com/repos/${repo}/releases/latest`,
-      headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "act-workspace" },
+      headers: this.getUpdateHeaders(),
     });
     const latest = resp.json.tag_name?.replace(/^v/, "") ?? "";
     if (!latest) throw new Error("无法获取最新版本号");
@@ -3443,11 +3469,10 @@ export default class ActWorkspacePlugin extends Plugin {
   }
 
   async performUpdate(): Promise<string> {
-    const repo = normalizeGitHubRepo(this.settings.updateRepo ?? "");
-    if (!repo) throw new Error("未配置 GitHub 仓库地址");
+    const repo = this.getUpdateRepo();
     const resp = await requestUrl({
       url: `https://api.github.com/repos/${repo}/releases/latest`,
-      headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "act-workspace" },
+      headers: this.getUpdateHeaders(),
     });
     const release = resp.json;
     const latest = release.tag_name?.replace(/^v/, "") ?? "";
@@ -3463,7 +3488,16 @@ export default class ActWorkspacePlugin extends Plugin {
     for (const filename of filesToUpdate) {
       const asset = assets.find((a: { name: string }) => a.name === filename);
       if (!asset) continue;
-      const fileResp = await requestUrl({ url: asset.browser_download_url });
+      const dlHeaders: Record<string, string> = { "User-Agent": "act-workspace" };
+      const token = this.settings.updateToken?.trim();
+      if (token) {
+        dlHeaders["Authorization"] = `token ${token}`;
+        dlHeaders["Accept"] = "application/octet-stream";
+      }
+      const dlUrl = token
+        ? `https://api.github.com/repos/${repo}/releases/assets/${(asset as unknown as { id: number }).id}`
+        : asset.browser_download_url;
+      const fileResp = await requestUrl({ url: dlUrl, headers: dlHeaders });
       await this.app.vault.adapter.writeBinary(`${pluginDir}/${filename}`, fileResp.arrayBuffer);
       updated++;
     }
@@ -3506,8 +3540,11 @@ class FolderSuggest extends AbstractInputSuggest<string> {
   }
 
   selectSuggestion(value: string) {
-    (this as unknown as { inputEl: HTMLInputElement }).inputEl.value = value;
-    (this as unknown as { inputEl: HTMLInputElement }).inputEl.dispatchEvent(new Event("input"));
+    const el = (this as unknown as { inputEl: HTMLInputElement }).inputEl;
+    const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (nativeSet) nativeSet.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
     this.close();
   }
 }
@@ -3540,10 +3577,12 @@ class FileSuggest extends AbstractInputSuggest<string> {
   }
 
   selectSuggestion(value: string) {
-    const inputEl = (this as unknown as { inputEl: HTMLInputElement }).inputEl;
-    const hash = inputEl.value.includes("#") ? inputEl.value.slice(inputEl.value.indexOf("#")) : "";
-    inputEl.value = value + hash;
-    inputEl.dispatchEvent(new Event("input"));
+    const el = (this as unknown as { inputEl: HTMLInputElement }).inputEl;
+    const hash = el.value.includes("#") ? el.value.slice(el.value.indexOf("#")) : "";
+    const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (nativeSet) nativeSet.call(el, value + hash); else el.value = value + hash;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
     this.close();
   }
 }
@@ -3638,30 +3677,6 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
       }
     });
 
-    new Setting(section)
-      .setName("更新源")
-      .setDesc("填写 GitHub 仓库地址或 owner/repo，用于从 Releases 检查更新。")
-      .addText((text) => {
-        text.setPlaceholder("owner/act-workspace");
-        text.setValue(this.plugin.settings.updateRepo);
-        text.inputEl.style.width = "100%";
-        text.onChange(async (value) => {
-          const normalized = normalizeGitHubRepo(value);
-          this.plugin.settings.updateRepo = normalized || value.trim();
-          await this.plugin.saveSettings();
-        });
-      })
-      .addButton((button) => {
-        button.setButtonText("打开仓库");
-        button.onClick(() => {
-          const url = getGitHubRepoUrl(this.plugin.settings.updateRepo);
-          if (!url) {
-            new Notice("请先填写有效的 GitHub 仓库地址");
-            return;
-          }
-          window.open(url, "_blank");
-        });
-      });
   }
 
   private renderTabContent(container: HTMLElement) {
@@ -3795,10 +3810,37 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
       cls: "setting-item-description"
     });
 
-    this.folderSetting(container, "mainCard", "核心卡", "核心知识卡片");
-    this.folderSetting(container, "bibCard", "阅读卡", "阅读笔记卡片");
-    this.folderSetting(container, "indexCard", "索引卡", "主题索引卡片");
-    this.folderSetting(container, "newCard", "新卡暂存", "待编号新卡");
+    const cardTypes: { key: string; folderKey: keyof FolderPaths; label: string; desc: string }[] = [
+      { key: "mainCard", folderKey: "mainCard", label: "核心卡", desc: "核心知识卡片" },
+      { key: "bibCard", folderKey: "bibCard", label: "阅读卡", desc: "阅读笔记卡片" },
+      { key: "indexCard", folderKey: "indexCard", label: "索引卡", desc: "主题索引卡片" },
+      { key: "newCard", folderKey: "newCard", label: "新卡暂存", desc: "待编号新卡" }
+    ];
+    for (const ct of cardTypes) {
+      const vis = this.plugin.settings.cardVisibility ?? {};
+      const isVisible = vis[ct.key] !== false;
+      new Setting(container)
+        .setName(ct.label)
+        .setDesc(ct.desc)
+        .addToggle((toggle) => {
+          toggle.setValue(isVisible).onChange(async (value) => {
+            if (!this.plugin.settings.cardVisibility) this.plugin.settings.cardVisibility = {};
+            this.plugin.settings.cardVisibility[ct.key] = value;
+            await this.plugin.saveSettings();
+          });
+          toggle.toggleEl.setAttribute("aria-label", "在前端显示");
+        })
+        .addText((text) => {
+          text.setPlaceholder(DEFAULT_FOLDERS[ct.folderKey] || "留空则不显示");
+          text.setValue(this.plugin.settings.folders[ct.folderKey]);
+          text.inputEl.style.width = "100%";
+          new FolderSuggest(this.app, text.inputEl);
+          text.onChange(async (value) => {
+            this.plugin.settings.folders[ct.folderKey] = value;
+            await this.plugin.saveSettings();
+          });
+        });
+    }
 
     container.createEl("h3", { text: "数据视图跳转" });
     container.createDiv({
