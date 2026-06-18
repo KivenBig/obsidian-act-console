@@ -5,4 +5,5 @@ data.json
 .DS_Store
 theme-data.gen.ts
 main.js
-
+package-lock.json
+*.js.map

@@ -12,12 +12,8 @@ export const THEME_CSS = ${JSON.stringify(css)};\n`;
 writeFileSync(join(__dirname, "theme-data.gen.ts"), generated);
 console.log("[build] Generated theme-data.gen.ts");
 
-const esbuildCandidates = [
-  join(__dirname, "node_modules/.bin/esbuild"),
-  join(__dirname, "../action-tracker/node_modules/.bin/esbuild")
-];
-const esbuild = esbuildCandidates.find((candidate) => existsSync(candidate));
-if (!esbuild) {
+const esbuild = join(__dirname, "node_modules/.bin/esbuild");
+if (!existsSync(esbuild)) {
   throw new Error("Cannot find esbuild. Run npm install in the plugin directory first.");
 }
 

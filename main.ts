@@ -17,10 +17,10 @@ import {
 import { THEME_CSS } from "./theme-data.gen";
 // THEME_CSS is now a single string (payview-saas), not a Record
 
-const VIEW_TYPE = "act-console-view";
+const VIEW_TYPE = "act-workspace-view";
 
 const RECENT_THOUGHTS_LIMIT = 3;
-const MOBILE_DAILY_CAPTURE_COMMAND_ID = "thought-capture:thought-capture-open";
+const MOBILE_DAILY_CAPTURE_COMMAND_ID = "act-capture:act-capture-open";
 const DIDA_WEB_URL = "https://dida365.com";
 const DIDA_API_BASE = "https://api.dida365.com";
 const DIDA_PREVIEW_LIMIT = 10;
@@ -28,7 +28,6 @@ const WEEK_IMPORTANT_HEADINGS = ["本周要事", "今日行动", "每日行动"]
 const RENDER_DEBOUNCE_MS = 350;
 const STARTUP_RENDER_DELAY_MS = 1600;
 const STARTUP_AUTO_OPEN_DELAY_MS = 1800;
-const STARTUP_SYNC_DELAY_MS = 15000;
 const DIDA_ACTIVE_CACHE_MS = 5000;
 
 type MainTab = "focus" | "action" | "card" | "time";
@@ -85,7 +84,7 @@ interface SkillShortcut {
   skill: string;
 }
 
-type TerminalMode = "termy" | "terminal" | "system" | "copy";
+type TerminalMode = "terminal" | "system" | "copy";
 type ProgressLogFormat = "heading-time" | "bullet-time";
 type CompletedLogTarget = "weekly" | "daily" | "custom";
 
@@ -130,7 +129,7 @@ interface DidaSettings {
   enabled: boolean;
   accessToken: string;
   lookbackDays: number;
-  syncIntervalMs: number;
+
   completedLogTarget: CompletedLogTarget;
   completedLogPathTemplate: string;
   completedLogHeading: string;
@@ -141,7 +140,7 @@ interface ProgressLogSettings {
   format: ProgressLogFormat;
 }
 
-interface HomeConsoleSettings {
+interface ActWorkspaceSettings {
   promptDrafts: Record<string, NotePromptValue>;
   progressDrafts: Record<string, { text: string; type: string }>;
   progressLog: ProgressLogSettings;
@@ -153,6 +152,7 @@ interface HomeConsoleSettings {
   folders: FolderPaths;
   dida: DidaSettings;
   updateRepo: string;
+  hideCompletedNotes: boolean;
 }
 
 const DEFAULT_FOLDERS: FolderPaths = {
@@ -177,7 +177,6 @@ const DEFAULT_DIDA: DidaSettings = {
   enabled: false,
   accessToken: "",
   lookbackDays: 14,
-  syncIntervalMs: 60 * 60 * 1000,
   completedLogTarget: "weekly",
   completedLogPathTemplate: "{weeklyFolder}/{weekId}.md",
   completedLogHeading: "## 每日记录"
@@ -195,18 +194,19 @@ const DEFAULT_PROGRESS_LOG: ProgressLogSettings = {
   format: "heading-time"
 };
 
-const DEFAULT_SETTINGS: HomeConsoleSettings = {
+const DEFAULT_SETTINGS: ActWorkspaceSettings = {
   promptDrafts: {},
   progressDrafts: {},
   progressLog: { ...DEFAULT_PROGRESS_LOG },
   skillItems: QUICK_SKILLS.map((s) => ({ ...s })),
   skillCommandTemplate: "cd {{vault}} && codex '{{skill}}'",
-  terminalMode: "termy",
+  terminalMode: "terminal",
   cycleMode: "monthly",
   dvPaths: { ...DEFAULT_DV_PATHS },
   folders: { ...DEFAULT_FOLDERS },
   dida: { ...DEFAULT_DIDA },
-  updateRepo: "KivenBig/obsidian-act-console"
+  updateRepo: "",
+  hideCompletedNotes: false
 };
 
 function pad(n: number): string {
@@ -339,37 +339,6 @@ function getGitHubRepoUrl(input: string): string {
   return repo ? `https://github.com/${repo}` : "";
 }
 
-function extractFrontmatter(content: string): Record<string, string> {
-  const m = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!m) return {};
-  const result: Record<string, string> = {};
-  for (const line of m[1].split("\n")) {
-    const idx = line.indexOf(":");
-    if (idx === -1) continue;
-    result[line.slice(0, idx).trim()] = line.slice(idx + 1).trim().replace(/^["'](.*)["']$/, "$1");
-  }
-  return result;
-}
-
-function parseMetric(value: string | undefined): number {
-  if (!value) return 0;
-  return parseInt(value.replace(/[,，\s]/g, "")) || 0;
-}
-
-function getFrontmatterValue(fm: Record<string, string>, ...keys: string[]): string {
-  for (const key of keys) {
-    const value = fm[key];
-    if (value !== undefined && value !== "") return value;
-  }
-  return "";
-}
-
-function deriveWeekId(dateStr: string): string {
-  const m = dateStr.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (!m) return "";
-  return formatWeekId(new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3])));
-}
-
 function formatWeekRange(weekId: string): string {
   if (!/^\d{4}-W\d{2}$/.test(weekId)) return "";
   const monday = weekIdToDate(weekId);
@@ -378,23 +347,8 @@ function formatWeekRange(weekId: string): string {
   return `${pad(monday.getMonth() + 1)}.${pad(monday.getDate())} - ${pad(sunday.getMonth() + 1)}.${pad(sunday.getDate())}`;
 }
 
-function extractBulletSection(content: string, heading: string, limit = 5): string[] {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const block = content.match(new RegExp(`(?:^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`))?.[1] ?? "";
-  return block
-    .split("\n")
-    .map((line) => line.match(/^\s*[-*]\s+(.+)/)?.[1]?.trim() ?? "")
-    .filter(Boolean)
-    .slice(0, limit);
-}
-
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function frontmatterTags(app: App, file: TFile): string[] {
-  const tags = app.metadataCache.getFileCache(file)?.frontmatter?.tags ?? [];
-  return Array.isArray(tags) ? tags : [tags];
 }
 
 function parseCheckboxes(content: string): WeekTask[] {
@@ -432,11 +386,6 @@ function findProgressSection(content: string, headingSetting = DEFAULT_PROGRESS_
     return { start: index + 1, end, level };
   }
   return null;
-}
-
-function hasNonStandardProgressSection(content: string): boolean {
-  return /^(#{1,6})\s*(?:\d+\s*[-.、]\s*)?(?:推进记录|进展记录|进度记录|跟进记录)\s*$/m.test(content)
-    && !/^##\s+进展记录\s*$/m.test(content);
 }
 
 function extractTaskSection(content: string, matchHeading: (heading: string) => boolean): string {
@@ -480,53 +429,8 @@ function getNextActionSection(content: string): { start: number; end: number; le
   return findTaskSection(content, (heading) => heading === "下步行动" || heading === "下一步行动" || heading === "行动清单");
 }
 
-function extractTaskBackground(content: string): string {
-  return extractTaskSection(content, (heading) => heading === "任务背景" || heading === "背景目标" || heading.startsWith("任务背景/"));
-}
-
-function extractNextActionSection(content: string): string {
-  return extractTaskSection(content, (heading) => heading === "下步行动" || heading === "下一步行动" || heading === "行动清单");
-}
-
 function extractSectionBlock(content: string, heading: string): string {
   return extractTaskSection(content, (title) => title === heading);
-}
-
-function normalizeTaskText(text: string): string {
-  return text
-    .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1")
-    .replace(/^[!！]{1,3}\s+/, "")
-    .replace(/\s*[!！]{1,3}\s*(?:✅.*)?$/, "")
-    .replace(/\s*✅.*$/, "")
-    .replace(/<!--.*?-->/g, "")
-    .replace(/\*\*/g, "")
-    .trim();
-}
-
-function extractWikiLinks(text: string): string[] {
-  const links: string[] = [];
-  const re = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) links.push(match[1].trim());
-  return links;
-}
-
-function extractWeeklyDirection(content: string): string[] {
-  const plan = extractSectionBlock(content, "本周计划");
-  const important = extractSectionBlock(content, "本周要事");
-  const lines: string[] = [];
-  for (const source of [plan, important]) {
-    for (const line of source.split("\n")) {
-      const plain = line
-        .replace(/^\s*[-*]\s*(?:\[[ xX]\]\s*)?/, "")
-        .replace(/^>\s*/, "")
-        .trim();
-      if (!plain || plain.startsWith("###") || plain === "---") continue;
-      lines.push(normalizeTaskText(plain));
-      if (lines.length >= 4) return lines;
-    }
-  }
-  return lines;
 }
 
 function extractProgressEntries(content: string, headingSetting = DEFAULT_PROGRESS_LOG.heading): ProgressEntry[] {
@@ -587,8 +491,6 @@ function parseProgressMarkerTime(marker: string): number {
     match[5] ? parseInt(match[5]) : 0
   ).getTime();
 }
-
-const PROGRESS_TYPE_TAGS = ["判断", "卡点", "情绪", "下一步"];
 
 function extractProgressTypeTag(text: string): { tag: string; body: string } {
   const match = text.match(/^【(判断|卡点|情绪|下一步)】\s*/);
@@ -846,17 +748,17 @@ function insertDidaCompletedLines(content: string, date: Date, linesToAdd: strin
 
 function formatDeadline(dateStr: string): { text: string; cls: string } {
   const m = dateStr.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (!m) return { text: dateStr, cls: "khc-deadline-normal" };
+  if (!m) return { text: dateStr, cls: "act-deadline-normal" };
   const target = new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
   target.setHours(0, 0, 0, 0);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const diff = Math.ceil((target.getTime() - today.getTime()) / 86400000);
-  if (diff < 0) return { text: "已过期", cls: "khc-deadline-overdue" };
-  if (diff === 0) return { text: "今天截止", cls: "khc-deadline-today" };
-  if (diff <= 3) return { text: `剩 ${diff} 天`, cls: "khc-deadline-urgent" };
-  if (diff <= 7) return { text: `剩 ${diff} 天`, cls: "khc-deadline-soon" };
-  return { text: `${target.getMonth() + 1}月${target.getDate()}日`, cls: "khc-deadline-normal" };
+  if (diff < 0) return { text: "已过期", cls: "act-deadline-overdue" };
+  if (diff === 0) return { text: "今天截止", cls: "act-deadline-today" };
+  if (diff <= 3) return { text: `剩 ${diff} 天`, cls: "act-deadline-urgent" };
+  if (diff <= 7) return { text: `剩 ${diff} 天`, cls: "act-deadline-soon" };
+  return { text: `${target.getMonth() + 1}月${target.getDate()}日`, cls: "act-deadline-normal" };
 }
 
 function parseDeadlineDate(dateStr: string): Date | null {
@@ -867,37 +769,8 @@ function parseDeadlineDate(dateStr: string): Date | null {
   return target;
 }
 
-function isOverdue(dateStr: string): boolean {
-  const target = parseDeadlineDate(dateStr);
-  if (!target) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return target.getTime() < today.getTime();
-}
-
 function countOpenTasks(tasks: WeekTask[]): number {
   return tasks.filter((task) => !task.done).length;
-}
-
-function stringifyMeta(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (Array.isArray(value)) return value.map(stringifyMeta).filter(Boolean).join(" / ");
-  if (typeof value === "object") return "";
-  return String(value).trim();
-}
-
-
-function getCreatedAt(value: unknown, fallback: number): number {
-  const text = stringifyMeta(value);
-  const timestamp = text ? Date.parse(text) : Number.NaN;
-  return Number.isNaN(timestamp) ? fallback : timestamp;
-}
-
-interface FsLike {
-  existsSync(path: string): boolean;
-  readFileSync(path: string, encoding: "utf8"): string;
-  readdirSync(path: string): string[];
-  statSync(path: string): { isDirectory(): boolean; isFile(): boolean; mtimeMs: number };
 }
 
 interface ChildProcessLike {
@@ -913,16 +786,6 @@ function getNodeRequire(): ((name: string) => unknown) | null {
   }
 }
 
-function getNodeFs(): FsLike | null {
-  const req = getNodeRequire();
-  if (!req) return null;
-  try {
-    return req("fs") as FsLike;
-  } catch {
-    return null;
-  }
-}
-
 function getNodeChildProcess(): ChildProcessLike | null {
   const req = getNodeRequire();
   if (!req) return null;
@@ -931,85 +794,6 @@ function getNodeChildProcess(): ChildProcessLike | null {
   } catch {
     return null;
   }
-}
-
-function readLocalText(path: string): string {
-  const fs = getNodeFs();
-  if (!fs?.existsSync(path)) return "";
-  try {
-    return fs.readFileSync(path, "utf8");
-  } catch {
-    return "";
-  }
-}
-
-function listLocalDirectories(path: string): string[] {
-  const fs = getNodeFs();
-  if (!fs?.existsSync(path)) return [];
-  try {
-    return fs.readdirSync(path).filter((name) => {
-      try {
-        return fs.statSync(`${path}/${name}`).isDirectory();
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return [];
-  }
-}
-
-function listLocalFiles(path: string, extension = ""): string[] {
-  const fs = getNodeFs();
-  if (!fs?.existsSync(path)) return [];
-  try {
-    return fs.readdirSync(path).filter((name) => {
-      try {
-        const stat = fs.statSync(`${path}/${name}`);
-        return stat.isFile() && (!extension || name.endsWith(extension));
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return [];
-  }
-}
-
-function getLocalMtimeIso(path: string): string {
-  const fs = getNodeFs();
-  if (!fs?.existsSync(path)) return "";
-  try {
-    return new Date(fs.statSync(path).mtimeMs).toISOString();
-  } catch {
-    return "";
-  }
-}
-
-function parseJsonSafe<T>(text: string): T | null {
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
-  }
-}
-
-function getHomePathFromVault(vaultPath: string): string {
-  const envHome = (globalThis as unknown as { process?: { env?: { HOME?: string } } }).process?.env?.HOME;
-  if (envHome) return envHome;
-  const parts = vaultPath.split("/");
-  return parts.length >= 3 ? `/${parts[1]}/${parts[2]}` : "";
-}
-
-function formatAiSessionTime(input: string): string {
-  const date = new Date(input);
-  if (Number.isNaN(date.getTime())) return input || "未知时间";
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
 }
 
 interface NotePromptValue {
@@ -1069,40 +853,40 @@ class NotePromptModal extends Modal {
   }
 
   onOpen() {
-    this.modalEl.addClass("khc-note-modal");
+    this.modalEl.addClass("act-note-modal");
     this.contentEl.empty();
-    this.contentEl.addClass("khc-modal");
+    this.contentEl.addClass("act-modal");
     this.contentEl.createEl("h2", { text: this.titleText });
-    this.titleInputEl = this.contentEl.createEl("input", { type: "text", placeholder: this.titlePlaceholder, cls: "khc-input" });
-    this.bodyInputEl = this.contentEl.createEl("textarea", { placeholder: this.bodyPlaceholder, cls: "khc-input khc-textarea" });
+    this.titleInputEl = this.contentEl.createEl("input", { type: "text", placeholder: this.titlePlaceholder, cls: "act-input" });
+    this.bodyInputEl = this.contentEl.createEl("textarea", { placeholder: this.bodyPlaceholder, cls: "act-input act-textarea" });
     this.titleInputEl.value = this.draft.title;
     this.bodyInputEl.value = this.draft.body;
     this.titleInputEl.addEventListener("input", () => this.scheduleDraftSave());
     this.bodyInputEl.addEventListener("input", () => this.scheduleDraftSave());
     if (this.options.helperText) {
-      this.contentEl.createDiv({ cls: "khc-modal-helper", text: this.options.helperText });
+      this.contentEl.createDiv({ cls: "act-modal-helper", text: this.options.helperText });
     }
     if (this.options.dueDateLabel || this.options.dueTimeLabel || this.options.priorityLabel) {
-      const row = this.contentEl.createDiv({ cls: "khc-modal-field-row" });
+      const row = this.contentEl.createDiv({ cls: "act-modal-field-row" });
       if (this.options.dueDateLabel) {
-        const field = row.createDiv({ cls: "khc-modal-field" });
+        const field = row.createDiv({ cls: "act-modal-field" });
         field.createEl("label", { text: this.options.dueDateLabel });
-        this.dueDateInputEl = field.createEl("input", { type: "date", cls: "khc-input" });
+        this.dueDateInputEl = field.createEl("input", { type: "date", cls: "act-input" });
         this.dueDateInputEl.value = this.draft.dueDate ?? this.options.defaultDueDate ?? "";
         this.dueDateInputEl.addEventListener("input", () => this.scheduleDraftSave());
         this.renderDueDateQuickActions(field);
       }
       if (this.options.dueTimeLabel) {
-        const field = row.createDiv({ cls: "khc-modal-field" });
+        const field = row.createDiv({ cls: "act-modal-field" });
         field.createEl("label", { text: this.options.dueTimeLabel });
-        this.dueTimeInputEl = field.createEl("input", { type: "time", cls: "khc-input" });
+        this.dueTimeInputEl = field.createEl("input", { type: "time", cls: "act-input" });
         this.dueTimeInputEl.value = this.draft.dueTime ?? "";
         this.dueTimeInputEl.addEventListener("input", () => this.scheduleDraftSave());
       }
       if (this.options.priorityLabel) {
-        const field = row.createDiv({ cls: "khc-modal-field" });
+        const field = row.createDiv({ cls: "act-modal-field" });
         field.createEl("label", { text: this.options.priorityLabel });
-        this.prioritySelectEl = field.createEl("select", { cls: "khc-input" });
+        this.prioritySelectEl = field.createEl("select", { cls: "act-input" });
         [
           { value: "0", label: "无优先级" },
           { value: "1", label: "低优先级" },
@@ -1126,14 +910,14 @@ class NotePromptModal extends Modal {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void this.submit();
       if (event.key === "Escape") this.close();
     });
-    const actions = this.contentEl.createDiv({ cls: "khc-modal-actions" });
+    const actions = this.contentEl.createDiv({ cls: "act-modal-actions" });
     new ButtonComponent(actions).setButtonText("取消").onClick(() => this.close());
     new ButtonComponent(actions).setButtonText("确定").setCta().onClick(() => void this.submit());
     this.titleInputEl.focus();
   }
 
   private renderDueDateQuickActions(container: HTMLElement) {
-    const quick = container.createDiv({ cls: "khc-due-quick" });
+    const quick = container.createDiv({ cls: "act-due-quick" });
     const today = new Date();
     const options = [
       { label: "今日", date: today },
@@ -1209,8 +993,8 @@ class NotePromptModal extends Modal {
   }
 }
 
-class HomeConsoleView extends ItemView {
-  private plugin: HomeConsolePlugin;
+class ActWorkspaceView extends ItemView {
+  private plugin: ActWorkspacePlugin;
   private activeTab: MainTab = "focus";
   private selectedProgressTaskPath = "";
   private focusActionFolder: "focus" | "active" | "maybe" = "focus";
@@ -1222,7 +1006,7 @@ class HomeConsoleView extends ItemView {
   private renderQueued = false;
   private didaActiveCache: { token: string; fetchedAt: number; tasks: DidaTask[]; promise?: Promise<DidaTask[]> } | null = null;
 
-  constructor(leaf: WorkspaceLeaf, plugin: HomeConsolePlugin) {
+  constructor(leaf: WorkspaceLeaf, plugin: ActWorkspacePlugin) {
     super(leaf);
     this.plugin = plugin;
   }
@@ -1258,10 +1042,36 @@ class HomeConsoleView extends ItemView {
   private renderStartupPlaceholder() {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
-    container.addClass("khc-root");
-    const card = container.createDiv({ cls: "khc-overview khc-startup-placeholder" });
-    card.createDiv({ text: "ACT 工作台", cls: "khc-progress-list-title" });
-    card.createDiv({ text: "正在等待 Obsidian 工作区恢复，稍后加载首页数据...", cls: "khc-progress-list-subtitle" });
+    container.addClass("act-root");
+    const quotes = [
+      "看清全局，推进一步。",
+      "行动 · 知识 · 方向，正在就位...",
+      "今天，从这里开始。",
+      "少即是多，完成即开始。"
+    ];
+    const now = new Date();
+    const weekday = ["日", "一", "二", "三", "四", "五", "六"][now.getDay()];
+    const dateStr = `${now.getFullYear()}.${pad(now.getMonth() + 1)}.${pad(now.getDate())}`;
+    const weekId = formatWeekId(now);
+
+    const wrap = container.createDiv({ cls: "act-startup" });
+
+    const brand = wrap.createDiv({ cls: "act-startup-brand" });
+    brand.createSpan({ text: "A", cls: "act-startup-letter" });
+    brand.createSpan({ text: "C", cls: "act-startup-letter" });
+    brand.createSpan({ text: "T", cls: "act-startup-letter" });
+
+    wrap.createDiv({ text: "工作台", cls: "act-startup-label" });
+
+    const meta = wrap.createDiv({ cls: "act-startup-meta" });
+    meta.createSpan({ text: `${dateStr}  星期${weekday}` });
+    meta.createSpan({ text: "·", cls: "act-startup-dot" });
+    meta.createSpan({ text: weekId });
+
+    wrap.createDiv({ text: quotes[Math.floor(Math.random() * quotes.length)], cls: "act-startup-quote" });
+
+    const bar = wrap.createDiv({ cls: "act-startup-bar" });
+    bar.createDiv({ cls: "act-startup-bar-fill" });
   }
 
   async render() {
@@ -1273,12 +1083,12 @@ class HomeConsoleView extends ItemView {
     try {
       const container = this.containerEl.children[1] as HTMLElement;
       container.empty();
-      container.addClass("khc-root");
+      container.addClass("act-root");
 
       this.renderOverview(container);
       this.renderMainTabs(container);
 
-      const body = container.createDiv({ cls: "khc-tab-body" });
+      const body = container.createDiv({ cls: "act-tab-body" });
       if (this.activeTab === "focus") await this.renderFocusTab(body);
       if (this.activeTab === "action") await this.renderActionTab(body);
       if (this.activeTab === "card") await this.renderCardTab(body);
@@ -1294,19 +1104,19 @@ class HomeConsoleView extends ItemView {
 
 
   private renderOverview(container: HTMLElement) {
-    const card = container.createDiv({ cls: "khc-overview" });
-    const toolbar = card.createDiv({ cls: "khc-ov-toolbar" });
+    const card = container.createDiv({ cls: "act-overview" });
+    const toolbar = card.createDiv({ cls: "act-ov-toolbar" });
 
-    const header = toolbar.createDiv({ cls: "khc-ov-skill-header" });
-    header.createSpan({ text: "常用技能", cls: "khc-ov-skill-title" });
-    header.createSpan({ text: "一键唤起 AI Agent，让笔记自己思考", cls: "khc-ov-skill-desc" });
+    const header = toolbar.createDiv({ cls: "act-ov-skill-header" });
+    header.createSpan({ text: "常用技能", cls: "act-ov-skill-title" });
+    header.createSpan({ text: "一键唤起 AI Agent，让笔记自己思考", cls: "act-ov-skill-desc" });
 
-    const skills = toolbar.createDiv({ cls: "khc-ov-skills" });
+    const skills = toolbar.createDiv({ cls: "act-ov-skills" });
     const skillItems = this.plugin.settings.skillItems.length > 0 ? this.plugin.settings.skillItems : QUICK_SKILLS;
     for (const item of skillItems) {
       const chip = skills.createEl("button", {
         text: item.label,
-        cls: "khc-ov-skill",
+        cls: "act-ov-skill",
         attr: { title: `运行 Skill：${item.skill}` }
       });
       chip.addEventListener("click", () => this.plugin.openSkillInTerminal(item.skill));
@@ -1314,7 +1124,7 @@ class HomeConsoleView extends ItemView {
   }
 
   private renderMainTabs(container: HTMLElement) {
-    const tabs = container.createDiv({ cls: "khc-tabs" });
+    const tabs = container.createDiv({ cls: "act-tabs" });
     this.tabButton(tabs, "focus", "🎯", "Today", "聚焦");
     this.tabButton(tabs, "action", "⚡", "Action", "行动");
     this.tabButton(tabs, "card", "💎", "Card", "知识");
@@ -1322,9 +1132,9 @@ class HomeConsoleView extends ItemView {
   }
 
   private tabButton(container: HTMLElement, mode: MainTab, icon: string, en: string, zh: string) {
-    const button = container.createEl("button", { cls: `khc-tab ${this.activeTab === mode ? "is-active" : ""}` });
-    button.createSpan({ text: icon, cls: "khc-tab-icon" });
-    button.createSpan({ text: `${en} · ${zh}`, cls: "khc-tab-label" });
+    const button = container.createEl("button", { cls: `act-tab ${this.activeTab === mode ? "is-active" : ""}` });
+    button.createSpan({ text: icon, cls: "act-tab-icon" });
+    button.createSpan({ text: `${en} · ${zh}`, cls: "act-tab-label" });
     button.addEventListener("click", () => this.setTab(mode));
   }
 
@@ -1334,9 +1144,9 @@ class HomeConsoleView extends ItemView {
   }
 
   private async renderFocusTab(container: HTMLElement) {
-    const grid = container.createDiv({ cls: "khc-panel-grid" });
-    const main = grid.createDiv({ cls: "khc-panel-main" });
-    const side = grid.createDiv({ cls: "khc-panel-side" });
+    const grid = container.createDiv({ cls: "act-panel-grid" });
+    const main = grid.createDiv({ cls: "act-panel-main" });
+    const side = grid.createDiv({ cls: "act-panel-side" });
 
     await this.renderFocusActions(main);
     await this.renderFixedSchedule(main);
@@ -1353,29 +1163,29 @@ class HomeConsoleView extends ItemView {
     ];
     const current = tabs.find((t) => t.id === this.focusActionFolder) ?? tabs[0];
 
-    const section = container.createDiv({ cls: "khc-section" });
+    const section = container.createDiv({ cls: "act-section" });
     section.setAttribute("data-label", "任务清单 · 今日");
 
-    const tabBar = section.createDiv({ cls: "khc-section-tabs" });
+    const tabBar = section.createDiv({ cls: "act-section-tabs" });
     for (const tab of tabs) {
-      const btn = tabBar.createEl("button", { text: tab.label, cls: `khc-section-tab ${tab.id === this.focusActionFolder ? "is-active" : ""}`, attr: { type: "button" } });
+      const btn = tabBar.createEl("button", { text: tab.label, cls: `act-section-tab ${tab.id === this.focusActionFolder ? "is-active" : ""}`, attr: { type: "button" } });
       btn.addEventListener("click", () => {
         this.focusActionFolder = tab.id;
         this.render();
       });
     }
-    const infoTrigger = tabBar.createDiv({ cls: "khc-info-trigger" });
-    const infoIcon = infoTrigger.createSpan({ cls: "khc-info-icon" });
+    const infoTrigger = tabBar.createDiv({ cls: "act-info-trigger" });
+    const infoIcon = infoTrigger.createSpan({ cls: "act-info-icon" });
     setIcon(infoIcon, "info");
-    const popup = infoTrigger.createDiv({ cls: "khc-info-popup" });
-    popup.createDiv({ text: "数据来源", cls: "khc-info-heading" });
-    popup.createDiv({ text: current.folder, cls: "khc-info-text" });
-    popup.createDiv({ text: "显示规则", cls: "khc-info-heading" });
-    popup.createDiv({ text: "仅显示带 #a-任务笔记 标签的笔记。行动项读取 ## 下步行动 区块中带 ! 或 ！ 标记的未完成内容；已完成行动项不在此处显示，会进入「今日已完成」。! / ！ = 一般，!! / ！！ = 重要，!!! / ！！！ = 最优先。", cls: "khc-info-text" });
-    popup.createDiv({ text: "新建规则", cls: "khc-info-heading" });
-    popup.createDiv({ text: "点击 + 按钮新建任务笔记，自动保存到当前所选文件夹。笔记自带 #a-任务笔记 标签和标准模板（下步行动 / 进展记录 / 背景目标）。", cls: "khc-info-text" });
+    const popup = infoTrigger.createDiv({ cls: "act-info-popup" });
+    popup.createDiv({ text: "数据来源", cls: "act-info-heading" });
+    popup.createDiv({ text: current.folder, cls: "act-info-text" });
+    popup.createDiv({ text: "显示规则", cls: "act-info-heading" });
+    popup.createDiv({ text: "仅显示带 #a-任务笔记 标签的笔记。行动项读取 ## 下步行动 区块中带 ! 或 ！ 标记的未完成内容；已完成行动项不在此处显示，会进入「今日已完成」。! / ！ = 一般，!! / ！！ = 重要，!!! / ！！！ = 最优先。", cls: "act-info-text" });
+    popup.createDiv({ text: "新建规则", cls: "act-info-heading" });
+    popup.createDiv({ text: "点击 + 按钮新建任务笔记，自动保存到当前所选文件夹。笔记自带 #a-任务笔记 标签和标准模板（下步行动 / 进展记录 / 背景目标）。", cls: "act-info-text" });
 
-    const addBtn = tabBar.createEl("button", { text: "+", cls: "khc-section-tab khc-section-tab-add", attr: { type: "button" } });
+    const addBtn = tabBar.createEl("button", { text: "+", cls: "act-section-tab act-section-tab-add", attr: { type: "button" } });
     addBtn.addEventListener("click", () => this.createFocusTaskNote(current));
 
     const folder = this.app.vault.getAbstractFileByPath(current.folder);
@@ -1384,6 +1194,7 @@ class HomeConsoleView extends ItemView {
       return;
     }
 
+    const todayStr = formatDateOnly(new Date());
     let noteCount = 0;
     for (const child of folder.children) {
       if (!(child instanceof TFile) || child.extension !== "md") continue;
@@ -1392,46 +1203,44 @@ class HomeConsoleView extends ItemView {
       if (!tags.includes("a-任务笔记")) continue;
       const markedItems = parseMarkedActions(content);
       const pendingItems = markedItems.filter((item) => !item.done);
-      const doneItems = markedItems.filter((item) => item.done);
-      const allDone = markedItems.length > 0 && pendingItems.length === 0;
+      const todayDoneItems = markedItems.filter((item) => item.done && item.doneDate === todayStr);
+      const allDone = pendingItems.length === 0;
+
+      if (this.plugin.settings.hideCompletedNotes && pendingItems.length === 0 && todayDoneItems.length === 0) continue;
 
       noteCount++;
-      const group = section.createDiv({ cls: `khc-focus-action-group ${allDone ? "is-all-done" : ""}` });
-      const head = group.createDiv({ cls: "khc-focus-action-head" });
-      const titleLink = head.createEl("a", { text: child.basename, cls: "khc-focus-action-title", href: "#" });
+      const group = section.createDiv({ cls: `act-focus-action-group ${allDone ? "is-all-done" : ""}` });
+      const head = group.createDiv({ cls: "act-focus-action-head" });
+      const titleLink = head.createEl("a", { text: child.basename, cls: "act-focus-action-title", href: "#" });
       titleLink.addEventListener("click", (e) => { e.preventDefault(); this.plugin.openPath(child.path); });
       if (allDone) {
-        head.createSpan({ text: "✓ 全部完成", cls: "khc-focus-action-all-done" });
+        head.createSpan({ text: "✓ 全部完成", cls: "act-focus-action-all-done" });
       }
       if (deadline) {
         const dl = formatDeadline(deadline);
-        head.createSpan({ text: dl.text, cls: "khc-focus-action-deadline" });
+        head.createSpan({ text: dl.text, cls: "act-focus-action-deadline" });
       }
 
-      if (markedItems.length === 0) {
-        group.createDiv({ text: "未标记下一步 — 在笔记中用 ! 或 ！ 标记行动项", cls: "khc-focus-action-empty" });
-      } else {
-        for (const item of pendingItems) {
-          const row = group.createDiv({ cls: "khc-focus-action-item" });
-          const check = row.createDiv({ cls: "khc-focus-action-check", attr: { role: "button", "aria-label": "完成行动项", title: "完成行动项" } });
-          check.createDiv();
-          check.addEventListener("click", async (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            await this.plugin.completeTaskActionItem(child.path, item.lineIndex);
-            await this.render();
-          });
-          row.createSpan({ text: item.text, cls: "khc-focus-action-text" });
-          if (item.priority >= 3) row.createSpan({ text: "!!!", cls: "khc-focus-action-priority is-p1" });
-          else if (item.priority >= 2) row.createSpan({ text: "!!", cls: "khc-focus-action-priority is-p2" });
-        }
-        for (const item of doneItems) {
-          const row = group.createDiv({ cls: "khc-focus-action-item is-done" });
-          const check = row.createDiv({ cls: "khc-focus-action-check" });
-          check.createDiv();
-          row.createSpan({ text: item.text, cls: "khc-focus-action-text" });
-          if (item.doneDate) row.createSpan({ text: `✓ ${item.doneDate}`, cls: "khc-focus-action-done-date" });
-        }
+      for (const item of pendingItems) {
+        const row = group.createDiv({ cls: "act-focus-action-item" });
+        const check = row.createDiv({ cls: "act-focus-action-check", attr: { role: "button", "aria-label": "完成行动项", title: "完成行动项" } });
+        check.createDiv();
+        check.addEventListener("click", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          await this.plugin.completeTaskActionItem(child.path, item.lineIndex);
+          await this.render();
+        });
+        row.createSpan({ text: item.text, cls: "act-focus-action-text" });
+        if (item.priority >= 3) row.createSpan({ text: "!!!", cls: "act-focus-action-priority is-p1" });
+        else if (item.priority >= 2) row.createSpan({ text: "!!", cls: "act-focus-action-priority is-p2" });
+      }
+      for (const item of todayDoneItems) {
+        const row = group.createDiv({ cls: "act-focus-action-item is-done" });
+        const check = row.createDiv({ cls: "act-focus-action-check" });
+        check.createDiv();
+        row.createSpan({ text: item.text, cls: "act-focus-action-text" });
+        row.createSpan({ text: `✓ ${item.doneDate}`, cls: "act-focus-action-done-date" });
       }
     }
     if (noteCount === 0) {
@@ -1480,13 +1289,13 @@ class HomeConsoleView extends ItemView {
       return;
     }
 
-    section.createDiv({ text: `今日完成 ${completed.length} 项`, cls: "khc-hint" });
+    section.createDiv({ text: `今日完成 ${completed.length} 项`, cls: "act-hint" });
     const sourceClsMap: Record<string, string> = { "滴答": "is-dida", "计划": "is-plan", "聚焦": "is-focus", "跟进": "is-active", "也许": "is-maybe" };
     for (const item of completed) {
-      const row = section.createDiv({ cls: "khc-completed-row" });
-      row.createSpan({ text: "✓", cls: "khc-completed-check" });
-      row.createSpan({ text: item.text, cls: "khc-completed-text" });
-      row.createSpan({ text: item.source, cls: `khc-completed-source ${sourceClsMap[item.source] ?? ""}` });
+      const row = section.createDiv({ cls: "act-completed-row" });
+      row.createSpan({ text: "✓", cls: "act-completed-check" });
+      row.createSpan({ text: item.text, cls: "act-completed-text" });
+      row.createSpan({ text: item.source, cls: `act-completed-source ${sourceClsMap[item.source] ?? ""}` });
     }
   }
 
@@ -1497,10 +1306,10 @@ class HomeConsoleView extends ItemView {
       rule: "列出 ACT 闪念文件夹下的闪念笔记。这里只显示笔记入口，不读取正文内容；点击条目会打开对应笔记。"
     });
     const dailyPath = `${this.F.daily}/${formatDailyDate(new Date())}.md`;
-    const btnGroup = section.createDiv({ cls: "khc-action-btn-group" });
-    const dailyBtn = btnGroup.createEl("button", { text: "今日日志", cls: "khc-small-action", attr: { type: "button" } });
+    const btnGroup = section.createDiv({ cls: "act-action-btn-group" });
+    const dailyBtn = btnGroup.createEl("button", { text: "今日日志", cls: "act-small-action", attr: { type: "button" } });
     dailyBtn.addEventListener("click", () => this.plugin.openOrCreateDaily(dailyPath));
-    const thoughtBtn = btnGroup.createEl("button", { text: "记录闪念", cls: "khc-small-action", attr: { type: "button" } });
+    const thoughtBtn = btnGroup.createEl("button", { text: "记录闪念", cls: "act-small-action", attr: { type: "button" } });
     thoughtBtn.addEventListener("click", () => this.plugin.openDailyCapture());
 
     const folder = this.app.vault.getAbstractFileByPath(this.F.thought);
@@ -1517,14 +1326,14 @@ class HomeConsoleView extends ItemView {
       return;
     }
 
-    section.createDiv({ text: `${notes.length} 篇闪念笔记`, cls: "khc-hint" });
+    section.createDiv({ text: `${notes.length} 篇闪念笔记`, cls: "act-hint" });
     for (const file of notes) {
-      const row = section.createDiv({ cls: "khc-thought-row" });
+      const row = section.createDiv({ cls: "act-thought-row" });
       row.createDiv({
         text: new Date(file.stat.mtime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }),
-        cls: "khc-thought-date"
+        cls: "act-thought-date"
       });
-      row.createDiv({ text: file.basename, cls: "khc-thought-preview" });
+      row.createDiv({ text: file.basename, cls: "act-thought-preview" });
       row.addEventListener("click", () => this.plugin.openPath(file.path));
       row.addClass("is-clickable");
     }
@@ -1538,7 +1347,7 @@ class HomeConsoleView extends ItemView {
   ];
 
   private getActionStatus(task: ActionTask): string {
-    for (const s of HomeConsoleView.ACTION_STATUSES) {
+    for (const s of ActWorkspaceView.ACTION_STATUSES) {
       if (task.tags.includes(s.tag)) return s.css;
     }
     return "none";
@@ -1547,7 +1356,7 @@ class HomeConsoleView extends ItemView {
   private async setActionStatus(task: ActionTask, newTag: string) {
     const file = this.app.vault.getAbstractFileByPath(task.filePath);
     if (!(file instanceof TFile)) return;
-    const statusTags = HomeConsoleView.ACTION_STATUSES.map((s) => s.tag);
+    const statusTags = ActWorkspaceView.ACTION_STATUSES.map((s) => s.tag);
     await this.app.vault.process(file, (content) => {
       const fmMatch = content.match(/^(---\n)([\s\S]*?)(\n---)/);
       if (!fmMatch) return content;
@@ -1582,9 +1391,9 @@ class HomeConsoleView extends ItemView {
       this.selectedProgressTaskPath = tasks[0]?.filePath ?? "";
     }
 
-    const grid = container.createDiv({ cls: "khc-panel-grid khc-action-grid" });
-    const list = grid.createDiv({ cls: "khc-panel-side" });
-    const detail = grid.createDiv({ cls: "khc-panel-main" });
+    const grid = container.createDiv({ cls: "act-panel-grid act-action-grid" });
+    const list = grid.createDiv({ cls: "act-panel-side" });
+    const detail = grid.createDiv({ cls: "act-panel-main" });
 
     this.renderActionTaskList(list, tasks);
 
@@ -1594,9 +1403,9 @@ class HomeConsoleView extends ItemView {
   }
 
   private renderActionTaskList(container: HTMLElement, tasks: ActionTask[]) {
-    const headerRow = container.createDiv({ cls: "khc-action-list-header" });
-    headerRow.createEl("h2", { text: "任务列表", cls: "khc-section-title" });
-    const addBtn = headerRow.createEl("button", { cls: "khc-action-add-btn", attr: { type: "button", "aria-label": "新建任务笔记" } });
+    const headerRow = container.createDiv({ cls: "act-action-list-header" });
+    headerRow.createEl("h2", { text: "任务列表", cls: "act-section-title" });
+    const addBtn = headerRow.createEl("button", { cls: "act-action-add-btn", attr: { type: "button", "aria-label": "新建任务笔记" } });
     setIcon(addBtn, "plus");
     addBtn.addEventListener("click", () => this.createActionTaskNote());
     this.sectionInfo(headerRow, {
@@ -1621,9 +1430,9 @@ class HomeConsoleView extends ItemView {
       const folderTasks = tasks.filter((t) => t.folder === folder.id && !t.tags.includes("a-已完成"));
       if (folderTasks.length === 0) continue;
 
-      const folderHeader = container.createDiv({ cls: `khc-action-folder is-folder-${folder.id}` });
+      const folderHeader = container.createDiv({ cls: `act-action-folder is-folder-${folder.id}` });
       folderHeader.createSpan({ text: folder.label });
-      folderHeader.createSpan({ text: `${folderTasks.length}`, cls: "khc-action-group-count" });
+      folderHeader.createSpan({ text: `${folderTasks.length}`, cls: "act-action-group-count" });
 
       const statusOrder = [
         { css: "active", label: "推进中" },
@@ -1643,14 +1452,14 @@ class HomeConsoleView extends ItemView {
         const items = grouped.get(s.css);
         if (!items || items.length === 0) continue;
         if (s.label) {
-          const subHeader = container.createDiv({ cls: `khc-action-status-label is-${s.css}` });
-          subHeader.createSpan({ cls: `khc-action-dot is-${s.css}` });
+          const subHeader = container.createDiv({ cls: `act-action-status-label is-${s.css}` });
+          subHeader.createSpan({ cls: `act-action-dot is-${s.css}` });
           subHeader.createSpan({ text: s.label });
         }
         for (const task of items) {
           const active = task.filePath === this.selectedProgressTaskPath;
-          const btn = container.createEl("button", { cls: `khc-action-task-btn ${active ? "is-active" : ""}`, attr: { type: "button" } });
-          btn.createSpan({ text: task.title, cls: "khc-action-task-name" });
+          const btn = container.createEl("button", { cls: `act-action-task-btn ${active ? "is-active" : ""}`, attr: { type: "button" } });
+          btn.createSpan({ text: task.title, cls: "act-action-task-name" });
           btn.addEventListener("click", async () => {
             this.selectedProgressTaskPath = task.filePath;
             await this.render();
@@ -1661,7 +1470,7 @@ class HomeConsoleView extends ItemView {
 
     const doneCount = tasks.filter((t) => t.tags.includes("a-已完成")).length;
     if (doneCount > 0) {
-      container.createDiv({ text: `${doneCount} 个已完成任务已隐藏`, cls: "khc-action-done-hint" });
+      container.createDiv({ text: `${doneCount} 个已完成任务已隐藏`, cls: "act-action-done-hint" });
     }
   }
 
@@ -1674,11 +1483,11 @@ class HomeConsoleView extends ItemView {
     const modal = new Modal(this.app);
     modal.titleEl.setText("新建任务笔记");
     const body = modal.contentEl;
-    body.createDiv({ text: "选择任务所属文件夹：", cls: "khc-folder-choice-hint" });
+    body.createDiv({ text: "选择任务所属文件夹：", cls: "act-folder-choice-hint" });
     for (const choice of folderChoices) {
-      const btn = body.createEl("button", { cls: "khc-folder-choice-btn", attr: { type: "button" } });
-      btn.createDiv({ text: choice.label, cls: "khc-folder-choice-label" });
-      btn.createDiv({ text: choice.desc, cls: "khc-folder-choice-desc" });
+      const btn = body.createEl("button", { cls: "act-folder-choice-btn", attr: { type: "button" } });
+      btn.createDiv({ text: choice.label, cls: "act-folder-choice-label" });
+      btn.createDiv({ text: choice.desc, cls: "act-folder-choice-desc" });
       btn.addEventListener("click", () => {
         modal.close();
         this.plugin.openNotePrompt(
@@ -1729,10 +1538,10 @@ class HomeConsoleView extends ItemView {
     const content = await this.app.vault.cachedRead(file);
     const entries = extractProgressEntries(content, this.plugin.settings.progressLog.heading);
 
-    const head = container.createDiv({ cls: "khc-progress-head" });
-    const titleWrap = head.createDiv({ cls: "khc-progress-head-text" });
-    titleWrap.createDiv({ text: task.title, cls: "khc-progress-title" });
-    const headMeta = titleWrap.createDiv({ cls: "khc-progress-head-meta" });
+    const head = container.createDiv({ cls: "act-progress-head" });
+    const titleWrap = head.createDiv({ cls: "act-progress-head-text" });
+    titleWrap.createDiv({ text: task.title, cls: "act-progress-title" });
+    const headMeta = titleWrap.createDiv({ cls: "act-progress-head-meta" });
     headMeta.createSpan({ text: task.folder === "11" ? "聚焦承诺" : "活跃跟进" });
     if (task.deadline) {
       const dl = parseDeadlineDate(task.deadline);
@@ -1740,18 +1549,18 @@ class HomeConsoleView extends ItemView {
         const daysLeft = Math.ceil((dl.getTime() - Date.now()) / 86400000);
         const urgency = daysLeft < 0 ? `已逾期 ${-daysLeft} 天` : daysLeft <= 7 ? `还剩 ${daysLeft} 天` : `截止 ${task.deadline}`;
         const cls = daysLeft < 0 ? "is-overdue" : daysLeft <= 7 ? "is-urgent" : "";
-        headMeta.createSpan({ text: urgency, cls: `khc-deadline-hint ${cls}` });
+        headMeta.createSpan({ text: urgency, cls: `act-deadline-hint ${cls}` });
       } else {
         headMeta.createSpan({ text: `截止 ${task.deadline}` });
       }
     }
     if (task.priority) headMeta.createSpan({ text: `P${task.priority}` });
-    if (task.aiNote) headMeta.createSpan({ text: task.aiNote, cls: "khc-head-remark" });
-    const open = head.createEl("button", { text: "打开原笔记", cls: "khc-progress-open", attr: { type: "button" } });
+    if (task.aiNote) headMeta.createSpan({ text: task.aiNote, cls: "act-head-remark" });
+    const open = head.createEl("button", { text: "打开原笔记", cls: "act-progress-open", attr: { type: "button" } });
     open.addEventListener("click", () => this.plugin.openPath(task.filePath));
 
-    const statusBar = container.createDiv({ cls: "khc-status-switcher" });
-    statusBar.createDiv({ text: "执行状态", cls: "khc-status-switcher-label khc-section-title" });
+    const statusBar = container.createDiv({ cls: "act-status-switcher" });
+    statusBar.createDiv({ text: "执行状态", cls: "act-status-switcher-label act-section-title" });
     this.sectionInfo(statusBar, {
       source: "任务笔记 frontmatter → tags 属性",
       rule: "点击状态标签切换任务的执行状态（写入 frontmatter tags）。再次点击当前状态可清除。状态与文件夹正交：文件夹管承诺程度，标签管当前进度。",
@@ -1763,8 +1572,8 @@ class HomeConsoleView extends ItemView {
       ]
     });
     const currentStatus = this.getActionStatus(task);
-    for (const s of HomeConsoleView.ACTION_STATUSES) {
-      const chip = statusBar.createEl("button", { text: s.label, cls: `khc-status-chip is-${s.css} ${currentStatus === s.css ? "is-current" : ""}`, attr: { type: "button" } });
+    for (const s of ActWorkspaceView.ACTION_STATUSES) {
+      const chip = statusBar.createEl("button", { text: s.label, cls: `act-status-chip is-${s.css} ${currentStatus === s.css ? "is-current" : ""}`, attr: { type: "button" } });
       chip.addEventListener("click", async () => {
         if (currentStatus === s.css) {
           await this.setActionStatus(task, "");
@@ -1775,6 +1584,58 @@ class HomeConsoleView extends ItemView {
       });
     }
 
+    // --- 记录进展（输入框）---
+    const editor = container.createDiv({ cls: "act-workbench-editor" });
+    editor.createDiv({ text: "记录进展", cls: "act-workbench-editor-title act-section-title" });
+    this.sectionInfo(editor, {
+      source: `写入到任务笔记 → ${this.plugin.settings.progressLog.heading} 区块顶部`,
+      rule: `选择类型后输入内容，保存后按「${this.plugin.settings.progressLog.format === "bullet-time" ? "项目符 + 时间" : "三级标题 + 时间"}」插入。非进展类型会以【类型】前缀写入，如【卡点】内容。`
+    });
+    const draft = this.progressDrafts[task.filePath] ?? { text: "", type: "进展" };
+    let recordType = draft.type;
+    const saveDraft = () => { this.progressDrafts[task.filePath] = draft; this.plugin.saveSettings(); };
+    const typeRow = editor.createDiv({ cls: "act-progress-type-row" });
+    for (const type of ["进展", "判断", "卡点", "情绪", "下一步"]) {
+      const chip = typeRow.createEl("button", { text: type, cls: `act-progress-type ${type === recordType ? "is-active" : ""}`, attr: { type: "button" } });
+      chip.addEventListener("click", () => {
+        recordType = type;
+        draft.type = type;
+        saveDraft();
+        typeRow.querySelectorAll(".act-progress-type").forEach((el) => el.removeClass("is-active"));
+        chip.addClass("is-active");
+      });
+    }
+    const inputRow = editor.createDiv({ cls: "act-workbench-input-row" });
+    const input = inputRow.createEl("textarea", {
+      cls: "act-progress-input",
+      attr: { placeholder: "记录进展、判断、卡点...", rows: "4" }
+    });
+    input.value = draft.text;
+    input.addEventListener("input", () => {
+      draft.text = input.value;
+      saveDraft();
+    });
+    const btnGroup = inputRow.createDiv({ cls: "act-progress-btn-group" });
+    let expanded = false;
+    const expandBtn = btnGroup.createEl("button", { cls: "act-progress-expand", attr: { type: "button" } });
+    setIcon(expandBtn, "maximize-2");
+    expandBtn.addEventListener("click", () => {
+      expanded = !expanded;
+      input.classList.toggle("is-expanded", expanded);
+      setIcon(expandBtn, expanded ? "minimize-2" : "maximize-2");
+      input.focus();
+    });
+    const save = btnGroup.createEl("button", { text: "保存", cls: "act-progress-save", attr: { type: "button" } });
+    save.addEventListener("click", async () => {
+      const text = input.value.trim();
+      if (!text) { new Notice("先写一点进展"); input.focus(); return; }
+      await this.plugin.appendProgressToTask(task.filePath, recordType === "进展" ? text : `【${recordType}】${text}`);
+      delete this.progressDrafts[task.filePath];
+      await this.plugin.saveSettings();
+      await this.render();
+    });
+
+    // --- 下步行动 ---
     const section = getNextActionSection(content);
     const contentLines = content.split("\n");
     const nextActionLines = section
@@ -1782,13 +1643,13 @@ class HomeConsoleView extends ItemView {
       : task.todos.map((todo) => ({ line: `- [ ] ${todo}`, lineIndex: -1, writable: false }));
     const visibleNextActionLines = nextActionLines.filter((item) => item.line.trim());
     if (visibleNextActionLines.length > 0) {
-      const nextBox = container.createDiv({ cls: "khc-workbench-next" });
-      nextBox.createDiv({ text: "下步行动", cls: "khc-workbench-next-title khc-section-title" });
+      const nextBox = container.createDiv({ cls: "act-workbench-next" });
+      nextBox.createDiv({ text: "下步行动", cls: "act-workbench-next-title act-section-title" });
       this.sectionInfo(nextBox, {
         source: "任务笔记 → ## 下步行动 区块",
         rule: "读取任务笔记中 ## 下步行动（或 ## 下一步行动 / ## 行动清单）下的内容。支持复选框（- [ ] / - [x]）和普通列表。"
       });
-      const nextBody = nextBox.createDiv({ cls: "khc-workbench-next-body" });
+      const nextBody = nextBox.createDiv({ cls: "act-workbench-next-body" });
       for (const action of visibleNextActionLines) {
         const line = action.line;
         const trimmed = line.trim();
@@ -1796,46 +1657,51 @@ class HomeConsoleView extends ItemView {
         const isCheckbox = /^[-*]\s*\[([ xX])\]\s*(.+)/.exec(trimmed);
         if (isCheckbox) {
           const done = isCheckbox[1].toLowerCase() === "x";
-          const row = nextBody.createDiv({ cls: `khc-workbench-todo ${done ? "is-done" : ""}` });
-          if (done || !action.writable) {
-            row.createSpan({ text: done ? "✓" : "○", cls: "khc-workbench-todo-check" });
-          } else {
-            const check = row.createEl("button", { text: "○", cls: "khc-workbench-todo-check", attr: { type: "button", "aria-label": "完成行动项", title: "完成行动项" } });
+          const row = nextBody.createDiv({ cls: `act-workbench-todo ${done ? "is-done" : ""}` });
+          const check = row.createDiv({ cls: "act-focus-action-check" });
+          check.createDiv();
+          if (!done && action.writable) {
+            check.setAttribute("role", "button");
+            check.setAttribute("aria-label", "完成行动项");
+            check.setAttribute("title", "完成行动项");
             check.addEventListener("click", async () => {
               await this.plugin.completeTaskActionItem(task.filePath, action.lineIndex);
               await this.render();
             });
           }
-          row.createSpan({ text: isCheckbox[2].trim(), cls: "khc-workbench-todo-text" });
+          row.createSpan({ text: isCheckbox[2].trim(), cls: "act-workbench-todo-text" });
         } else if (/^[-*]\s+/.test(trimmed)) {
-          const row = nextBody.createDiv({ cls: "khc-workbench-todo" });
+          const row = nextBody.createDiv({ cls: "act-workbench-todo" });
+          const check = row.createDiv({ cls: "act-focus-action-check" });
+          check.createDiv();
           if (action.writable) {
-            const check = row.createEl("button", { text: "○", cls: "khc-workbench-todo-check", attr: { type: "button", "aria-label": "完成行动项", title: "完成行动项" } });
+            check.setAttribute("role", "button");
+            check.setAttribute("aria-label", "完成行动项");
+            check.setAttribute("title", "完成行动项");
             check.addEventListener("click", async () => {
               await this.plugin.completeTaskActionItem(task.filePath, action.lineIndex);
               await this.render();
             });
-          } else {
-            row.createSpan({ text: "○", cls: "khc-workbench-todo-check" });
           }
-          row.createSpan({ text: trimmed.replace(/^[-*]\s+/, ""), cls: "khc-workbench-todo-text" });
+          row.createSpan({ text: trimmed.replace(/^[-*]\s+/, ""), cls: "act-workbench-todo-text" });
         } else {
-          nextBody.createDiv({ text: trimmed.replace(/^[-*]\s+/, ""), cls: "khc-workbench-todo-plain" });
+          nextBody.createDiv({ text: trimmed.replace(/^[-*]\s+/, ""), cls: "act-workbench-todo-plain" });
         }
       }
     } else {
-      const nextBox = container.createDiv({ cls: "khc-workbench-next is-empty" });
-      nextBox.createDiv({ text: "下步行动", cls: "khc-workbench-next-title khc-section-title" });
+      const nextBox = container.createDiv({ cls: "act-workbench-next is-empty" });
+      nextBox.createDiv({ text: "下步行动", cls: "act-workbench-next-title act-section-title" });
       this.sectionInfo(nextBox, {
         source: "任务笔记 → ## 下步行动 区块",
         rule: "读取任务笔记中 ## 下步行动（或 ## 下一步行动 / ## 行动清单）下的内容。支持复选框（- [ ] / - [x]）和普通列表。"
       });
-      nextBox.createDiv({ text: "还没有写下一步，在原笔记的 ## 下步行动 中添加", cls: "khc-empty" });
+      nextBox.createDiv({ text: "还没有写下一步，在原笔记的 ## 下步行动 中添加", cls: "act-empty" });
     }
 
+    // --- 最近进展 ---
     if (entries.length > 0) {
-      const recentBox = container.createDiv({ cls: "khc-workbench-recent" });
-      recentBox.createDiv({ text: "最近进展", cls: "khc-workbench-section-title khc-section-title" });
+      const recentBox = container.createDiv({ cls: "act-workbench-recent" });
+      recentBox.createDiv({ text: "最近进展", cls: "act-workbench-section-title act-section-title" });
       this.sectionInfo(recentBox, {
         source: `任务笔记 → ${this.plugin.settings.progressLog.heading} 区块（最近 3 条）`,
         rule: "识别两种格式：1) ### 标题 作为分段标记；2) 以日期开头的列表项（- YYYY-MM-DD HH:MM 内容 或 - [[YYYY-MM-DD（周几）]] 内容）。按时间倒序，仅显示最近 3 条。",
@@ -1847,78 +1713,21 @@ class HomeConsoleView extends ItemView {
       });
       for (const entry of entries.slice(0, 3)) {
         const { tag, body: entryBody } = extractProgressTypeTag(entry.text);
-        const item = recentBox.createDiv({ cls: `khc-progress-entry ${tag ? `is-type-${tag}` : ""}` });
-        const timeRow = item.createDiv({ cls: "khc-progress-entry-time" });
+        const item = recentBox.createDiv({ cls: `act-progress-entry ${tag ? `is-type-${tag}` : ""}` });
+        const timeRow = item.createDiv({ cls: "act-progress-entry-time" });
         timeRow.createSpan({ text: entry.marker || "记录" });
-        if (tag) timeRow.createSpan({ text: tag, cls: `khc-progress-tag is-${tag}` });
-        item.createDiv({ text: entryBody, cls: "khc-progress-entry-text" });
+        if (tag) timeRow.createSpan({ text: tag, cls: `act-progress-tag is-${tag}` });
+        item.createDiv({ text: entryBody, cls: "act-progress-entry-text" });
       }
     }
 
-    const editor = container.createDiv({ cls: "khc-workbench-editor" });
-    editor.createDiv({ text: "记录进展", cls: "khc-workbench-editor-title khc-section-title" });
-    this.sectionInfo(editor, {
-      source: `写入到任务笔记 → ${this.plugin.settings.progressLog.heading} 区块顶部`,
-      rule: `选择类型后输入内容，保存后按「${this.plugin.settings.progressLog.format === "bullet-time" ? "项目符 + 时间" : "三级标题 + 时间"}」插入。非进展类型会以【类型】前缀写入，如【卡点】内容。`
-    });
-    const draft = this.progressDrafts[task.filePath] ?? { text: "", type: "进展" };
-    let recordType = draft.type;
-    const saveDraft = () => { this.progressDrafts[task.filePath] = draft; this.plugin.saveSettings(); };
-    const typeRow = editor.createDiv({ cls: "khc-progress-type-row" });
-    for (const type of ["进展", "判断", "卡点", "情绪", "下一步"]) {
-      const chip = typeRow.createEl("button", { text: type, cls: `khc-progress-type ${type === recordType ? "is-active" : ""}`, attr: { type: "button" } });
-      chip.addEventListener("click", () => {
-        recordType = type;
-        draft.type = type;
-        saveDraft();
-        typeRow.querySelectorAll(".khc-progress-type").forEach((el) => el.removeClass("is-active"));
-        chip.addClass("is-active");
-      });
-    }
-    const inputRow = editor.createDiv({ cls: "khc-workbench-input-row" });
-    const input = inputRow.createEl("textarea", {
-      cls: "khc-progress-input",
-      attr: { placeholder: "记录进展、判断、卡点...", rows: "4" }
-    });
-    input.value = draft.text;
-    input.addEventListener("input", () => {
-      draft.text = input.value;
-      saveDraft();
-    });
-    const btnGroup = inputRow.createDiv({ cls: "khc-progress-btn-group" });
-    let expanded = false;
-    const expandBtn = btnGroup.createEl("button", { cls: "khc-progress-expand", attr: { type: "button" } });
-    setIcon(expandBtn, "maximize-2");
-    expandBtn.addEventListener("click", () => {
-      expanded = !expanded;
-      input.classList.toggle("is-expanded", expanded);
-      setIcon(expandBtn, expanded ? "minimize-2" : "maximize-2");
-      input.focus();
-    });
-    const save = btnGroup.createEl("button", { text: "保存", cls: "khc-progress-save", attr: { type: "button" } });
-    save.addEventListener("click", async () => {
-      const text = input.value.trim();
-      if (!text) { new Notice("先写一点进展"); input.focus(); return; }
-      await this.plugin.appendProgressToTask(task.filePath, recordType === "进展" ? text : `【${recordType}】${text}`);
-      delete this.progressDrafts[task.filePath];
-      await this.plugin.saveSettings();
-      await this.render();
-    });
-
-  }
-
-  private renderProgressContext(container: HTMLElement, title: string, text: string) {
-    if (!text.trim()) return;
-    const box = container.createDiv({ cls: "khc-progress-context" });
-    box.createDiv({ text: title, cls: "khc-progress-context-title" });
-    box.createDiv({ text: text.trim(), cls: "khc-progress-context-body" });
   }
 
   private async renderFixedSchedule(container: HTMLElement) {
     if (!this.plugin.settings.dida.enabled) return;
     const section = this.section(container, "固定日程", "滴答清单 · 今日");
-    section.addClass("khc-dida-section");
-    const actions = section.createDiv({ cls: "khc-dida-header-actions" });
+    section.addClass("act-dida-section");
+    const actions = section.createDiv({ cls: "act-dida-header-actions" });
     this.didaToolButton(actions, "新增任务", "plus", () => this.plugin.captureDidaTask());
     this.didaToolButton(actions, "打开滴答清单", "external-link", () => window.open(DIDA_WEB_URL, "_blank"));
     this.didaToolButton(actions, "任务更新", "refresh-cw", async () => {
@@ -1939,7 +1748,7 @@ class HomeConsoleView extends ItemView {
     });
     this.sectionInfo(section, {
       source: "滴答清单 Open API（设置中配置 Access Token）",
-      rule: `今日任务 = dueDate 为今天；未安排任务 = 无 dueDate 或已超期。完成记录写入：${this.plugin.describeCompletedLogTarget()} 的 ${this.plugin.settings.dida.completedLogHeading} 下。按优先级降序、截止日期升序排列。`,
+      rule: `今日任务 = dueDate 为今天；未安排任务 = 无 dueDate 或已超期。点击「任务更新」按钮可将完成记录同步到周记。按优先级降序、截止日期升序排列。`,
       props: [
         { name: "priority", desc: "0=无, 1=低, 3=中, 5=高" },
         { name: "dueDate", desc: "任务截止日期" },
@@ -1947,16 +1756,16 @@ class HomeConsoleView extends ItemView {
       ]
     });
 
-    const layout = section.createDiv({ cls: "khc-dida-layout" });
+    const layout = section.createDiv({ cls: "act-dida-layout" });
     await this.renderTodayDidaPanel(layout);
     await this.renderUnscheduledDidaPanel(layout);
   }
 
   private didaToolButton(container: HTMLElement, label: string, icon: string, onClick: () => void) {
-    const button = container.createEl("button", { cls: "khc-dida-tool", attr: { type: "button" } });
-    const iconEl = button.createSpan({ cls: "khc-dida-tool-icon" });
+    const button = container.createEl("button", { cls: "act-dida-tool", attr: { type: "button" } });
+    const iconEl = button.createSpan({ cls: "act-dida-tool-icon" });
     setIcon(iconEl, icon);
-    button.createSpan({ text: label, cls: "khc-dida-tool-label" });
+    button.createSpan({ text: label, cls: "act-dida-tool-label" });
     button.addEventListener("click", onClick);
   }
 
@@ -2012,7 +1821,7 @@ class HomeConsoleView extends ItemView {
     toggle?: { expanded: boolean; collapsedText: string; onToggle: (panel: HTMLElement, expanded: boolean) => void | Promise<void> }
   ) {
     const panel = container.createDiv({
-      cls: `khc-dida-panel ${toggle ? "is-collapsible" : ""} ${toggle && !toggle.expanded ? "is-collapsed" : ""}`
+      cls: `act-dida-panel ${toggle ? "is-collapsible" : ""} ${toggle && !toggle.expanded ? "is-collapsed" : ""}`
     });
     await this.renderDidaApiPanelContent(panel, title, limit, emptyMessage, filterTask, toggle);
   }
@@ -2027,16 +1836,16 @@ class HomeConsoleView extends ItemView {
   ) {
     panel.toggleClass("is-collapsible", Boolean(toggle));
     panel.toggleClass("is-collapsed", Boolean(toggle && !toggle.expanded));
-    const head = panel.createDiv({ cls: "khc-dida-panel-head" });
+    const head = panel.createDiv({ cls: "act-dida-panel-head" });
     if (toggle) {
-      const titleButton = head.createEl("button", { cls: "khc-dida-panel-toggle", attr: { type: "button" } });
-      titleButton.createSpan({ text: toggle.expanded ? "▾" : "▸", cls: "khc-dida-panel-toggle-icon" });
-      titleButton.createSpan({ text: title, cls: "khc-dida-panel-title" });
+      const titleButton = head.createEl("button", { cls: "act-dida-panel-toggle", attr: { type: "button" } });
+      titleButton.createSpan({ text: toggle.expanded ? "▾" : "▸", cls: "act-dida-panel-toggle-icon" });
+      titleButton.createSpan({ text: title, cls: "act-dida-panel-title" });
       titleButton.addEventListener("click", () => void toggle.onToggle(panel, toggle.expanded));
     } else {
-      head.createDiv({ text: title, cls: "khc-dida-panel-title" });
+      head.createDiv({ text: title, cls: "act-dida-panel-title" });
     }
-    const countEl = head.createDiv({ text: "正在读取...", cls: "khc-dida-count" });
+    const countEl = head.createDiv({ text: "正在读取...", cls: "act-dida-count" });
 
     if (toggle && !toggle.expanded) {
       countEl.setText(toggle.collapsedText);
@@ -2047,7 +1856,7 @@ class HomeConsoleView extends ItemView {
       return;
     }
 
-    const listEl = panel.createDiv({ cls: "khc-dida-list" });
+    const listEl = panel.createDiv({ cls: "act-dida-list" });
 
     const token = await this.plugin.getDidaApiToken();
     if (!token) {
@@ -2115,11 +1924,10 @@ class HomeConsoleView extends ItemView {
     const projectsRes = await requestUrl({ url: `${DIDA_API_BASE}/open/v1/project`, method: "GET", headers });
     const projects = projectsRes.json as { id: string; name: string }[];
     if (!Array.isArray(projects)) {
-      console.error("[HomeConsole] Dida projects response is not an array", projectsRes.json);
+      console.error("[ACT] Dida projects response is not an array", projectsRes.json);
       return [];
     }
     projects.unshift({ id: "inbox", name: "收件箱" });
-    console.log(`[HomeConsole] Dida: ${projects.length} projects (including inbox)`);
 
     const results = await Promise.all(
       projects.map(async (project): Promise<DidaTask[]> => {
@@ -2128,7 +1936,7 @@ class HomeConsoleView extends ItemView {
           const data = res.json as { tasks?: DidaTask[] };
           return (data.tasks ?? []).map((t) => ({ ...t, projectId: t.projectId ?? project.id }));
         } catch (error) {
-          console.warn(`[HomeConsole] Failed to fetch tasks for project "${project.name}"`, error);
+          console.error(`[ACT] Failed to fetch tasks for project "${project.name}"`, error);
           return [];
         }
       })
@@ -2139,7 +1947,6 @@ class HomeConsoleView extends ItemView {
         if (t.id && t.title && t.status === 0) allTasks.push(t);
       }
     }
-    console.log(`[HomeConsole] Dida: ${allTasks.length} active tasks total`);
     return allTasks;
   }
 
@@ -2192,12 +1999,12 @@ class HomeConsoleView extends ItemView {
   }
 
   private renderDidaTaskRow(container: HTMLElement, task: DidaTask) {
-    const row = container.createDiv({ cls: "khc-dida-task" });
+    const row = container.createDiv({ cls: "act-dida-task" });
     row.setAttr("data-priority", String(task.priority ?? 0));
-    const check = row.createDiv({ cls: "khc-dida-check" });
+    const check = row.createDiv({ cls: "act-dida-check" });
     check.setAttr("role", "button");
     check.setAttr("aria-label", "完成任务");
-    check.setAttr("title", "完成任务并同步到周记");
+    check.setAttr("title", "完成任务");
     check.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2212,15 +2019,15 @@ class HomeConsoleView extends ItemView {
       }
     });
     check.createDiv();
-    const body = row.createDiv({ cls: "khc-dida-body" });
-    const titleEl = body.createDiv({ text: normalizeInlineText(task.title), cls: "khc-dida-title" });
+    const body = row.createDiv({ cls: "act-dida-body" });
+    const titleEl = body.createDiv({ text: normalizeInlineText(task.title), cls: "act-dida-title" });
     const priorityLabel = this.getDidaPriorityLabel(task);
-    if (priorityLabel) titleEl.createSpan({ text: priorityLabel, cls: "khc-dida-priority" });
+    if (priorityLabel) titleEl.createSpan({ text: priorityLabel, cls: "act-dida-priority" });
     const overdue = this.isOverdueDidaTask(task);
-    if (overdue) titleEl.createSpan({ text: "已过期", cls: "khc-dida-overdue" });
+    if (overdue) titleEl.createSpan({ text: "已过期", cls: "act-dida-overdue" });
     const dueText = this.formatDidaDueText(task);
-    if (dueText !== "未安排") body.createDiv({ text: dueText, cls: `khc-dida-due ${overdue ? "is-overdue" : ""}` });
-    const actions = row.createDiv({ cls: "khc-dida-task-actions" });
+    if (dueText !== "未安排") body.createDiv({ text: dueText, cls: `act-dida-due ${overdue ? "is-overdue" : ""}` });
+    const actions = row.createDiv({ cls: "act-dida-task-actions" });
     this.didaTaskActionButton(actions, "编辑任务", "pencil", () => this.plugin.editDidaTask(task));
     this.didaTaskActionButton(actions, "删除任务", "trash-2", async () => {
       const title = normalizeInlineText(task.title);
@@ -2237,72 +2044,17 @@ class HomeConsoleView extends ItemView {
       }
     });
     const desc = normalizeInlineText(task.content ?? task.desc ?? "");
-    if (desc) body.createDiv({ text: desc, cls: "khc-dida-desc" });
+    if (desc) body.createDiv({ text: desc, cls: "act-dida-desc" });
   }
 
   private didaTaskActionButton(container: HTMLElement, label: string, icon: string, onClick: () => void | Promise<void>) {
-    const button = container.createEl("button", { cls: "khc-dida-task-action", attr: { type: "button", "aria-label": label, title: label } });
+    const button = container.createEl("button", { cls: "act-dida-task-action", attr: { type: "button", "aria-label": label, title: label } });
     setIcon(button, icon);
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       void onClick();
     });
-  }
-
-  private async renderActionGuide(container: HTMLElement) {
-    const section = this.section(container, "任务总览", "任务 · 跟踪");
-    this.sectionInfo(section, {
-      source: `${this.F.focusAction} 与 ${this.F.activeAction}`,
-      rule: "筛选 frontmatter tags 含 a1-要事推进 的笔记，按截止日期升序排列。",
-      props: [
-        { name: "tags", desc: "任务分类标签" },
-        { name: "AI 备注", desc: "AI 生成的任务概述" },
-        { name: "t-deadline", desc: "截止日期" },
-        { name: "priority", desc: "优先级数字" }
-      ]
-    });
-    const tasks = (await this.parseActionTasks()).sort((a, b) => {
-      const aDate = parseDeadlineDate(a.deadline)?.getTime() ?? Number.MAX_SAFE_INTEGER;
-      const bDate = parseDeadlineDate(b.deadline)?.getTime() ?? Number.MAX_SAFE_INTEGER;
-      return aDate - bDate || a.title.localeCompare(b.title, "zh-CN");
-    });
-    if (tasks.length === 0) {
-      this.empty(section, "暂无标记 a1-要事推进 的任务");
-      return;
-    }
-    const columns = [
-      { key: "title", label: "标题" },
-      { key: "group", label: "分组", width: "60px" },
-      { key: "deadline", label: "截止日期", width: "80px" },
-      { key: "priority", label: "优先级", width: "56px" },
-      { key: "note", label: "AI 备注" }
-    ];
-    const rows = tasks.map((task) => ({
-      data: {
-        title: task.title,
-        group: task.folder === "11" ? "聚焦" : "跟进",
-        deadline: task.deadline ? formatDeadline(task.deadline).text : "—",
-        priority: task.priority ? `P${task.priority}` : "—",
-        note: task.aiNote || "—"
-      },
-      onClick: () => this.plugin.openPath(task.filePath)
-    }));
-    this.renderDataTable(section, columns, rows);
-  }
-
-  private renderActionRemarks(container: HTMLElement, task: ActionTask) {
-    const notes = [
-      { label: "AI 备注", text: task.aiNote },
-      { label: "个人备注", text: task.personalNote }
-    ].filter((item) => item.text);
-    if (notes.length === 0) return;
-    const box = container.createDiv({ cls: "khc-action-remark-box" });
-    for (const note of notes) {
-      const row = box.createDiv({ cls: "khc-action-remark-row" });
-      if (notes.length > 1) row.createSpan({ text: note.label, cls: "khc-action-remark-label" });
-      row.createSpan({ text: note.text, cls: "khc-action-remark-text" });
-    }
   }
 
   private async renderWeeklyFlow(container: HTMLElement) {
@@ -2353,21 +2105,21 @@ class HomeConsoleView extends ItemView {
       { label: "周评分", done: weekRatingDone, current: isSaturday && weekPlanDone && !weekRatingDone, path: weekPath },
       { label: nextCycle.cycle, done: nextCycleStarted, current: weekOfCycle >= ci.totalWeeks && cycleReviewDone && !nextCycleStarted, path: nextCyclePath }
     ];
-    const row = section.createDiv({ cls: "khc-flow" });
+    const row = section.createDiv({ cls: "act-flow" });
     for (const step of steps) {
-      const el = row.createEl("button", { text: step.label, cls: `khc-flow-step ${step.done ? "is-done" : ""} ${step.current ? "is-active" : ""}` });
+      const el = row.createEl("button", { text: step.label, cls: `act-flow-step ${step.done ? "is-done" : ""} ${step.current ? "is-active" : ""}` });
       el.addEventListener("click", () => this.plugin.openPath(step.path));
     }
     const current = steps.find((s) => s.current);
-    section.createDiv({ text: current ? `现在应关注：${current.label}` : "本周流程已完成，继续执行策略", cls: "khc-hint" });
+    section.createDiv({ text: current ? `现在应关注：${current.label}` : "本周流程已完成，继续执行策略", cls: "act-hint" });
   }
 
   /* ========= CARD TAB (C 层 · 知识) ========= */
 
   private async renderCardTab(container: HTMLElement) {
-    const grid = container.createDiv({ cls: "khc-panel-grid" });
-    const main = grid.createDiv({ cls: "khc-panel-main" });
-    const side = grid.createDiv({ cls: "khc-panel-side" });
+    const grid = container.createDiv({ cls: "act-panel-grid" });
+    const main = grid.createDiv({ cls: "act-panel-main" });
+    const side = grid.createDiv({ cls: "act-panel-side" });
 
     await this.renderIndexCardOverview(main);
     await this.renderCardOverview(side);
@@ -2408,23 +2160,23 @@ class HomeConsoleView extends ItemView {
       const files = this.collectMarkdownFiles(child).sort((a, b) => a.basename.localeCompare(b.basename, "zh-CN"));
       if (files.length === 0) continue;
 
-      const groupEl = section.createDiv({ cls: "khc-index-group" });
-      groupEl.createDiv({ text: child.name.replace(/^[bkp]-/, "").replace(/-/g, " · "), cls: "khc-index-group-label" });
-      const chipRow = groupEl.createDiv({ cls: "khc-chip-row" });
+      const groupEl = section.createDiv({ cls: "act-index-group" });
+      groupEl.createDiv({ text: child.name.replace(/^[bkp]-/, "").replace(/-/g, " · "), cls: "act-index-group-label" });
+      const chipRow = groupEl.createDiv({ cls: "act-chip-row" });
       for (const file of files) {
         const count = indexRefCounts.get(file.basename) ?? 0;
-        const chip = chipRow.createEl("a", { cls: "khc-index-chip", href: "#" });
-        chip.createSpan({ text: file.basename.replace(/^[kbp]\d*-/, ""), cls: "khc-index-chip-name" });
-        if (count > 0) chip.createSpan({ text: String(count), cls: "khc-index-chip-count" });
+        const chip = chipRow.createEl("a", { cls: "act-index-chip", href: "#" });
+        chip.createSpan({ text: file.basename.replace(/^[kbp]\d*-/, ""), cls: "act-index-chip-name" });
+        if (count > 0) chip.createSpan({ text: String(count), cls: "act-index-chip-count" });
         chip.addEventListener("click", (e) => { e.preventDefault(); this.plugin.openPath(file.path); });
       }
     }
 
     const topLevelFiles = folder.children.filter((c) => c instanceof TFile && c.extension === "md") as TFile[];
     if (topLevelFiles.length > 0) {
-      const chipRow = section.createDiv({ cls: "khc-chip-row" });
+      const chipRow = section.createDiv({ cls: "act-chip-row" });
       for (const file of topLevelFiles) {
-        const chip = chipRow.createEl("a", { text: file.basename, cls: "khc-index-chip", href: "#" });
+        const chip = chipRow.createEl("a", { text: file.basename, cls: "act-index-chip", href: "#" });
         chip.addEventListener("click", (e) => { e.preventDefault(); this.plugin.openPath(file.path); });
       }
     }
@@ -2451,14 +2203,14 @@ class HomeConsoleView extends ItemView {
       { path: this.F.newCard, label: "新卡暂存", color: "default", dv: dvp.newCard }
     ];
 
-    const stats = section.createDiv({ cls: "khc-analytics-platforms" });
+    const stats = section.createDiv({ cls: "act-analytics-platforms" });
     for (const f of folders) {
       const folder = this.app.vault.getAbstractFileByPath(f.path);
       const count = folder instanceof TFolder ? this.collectMarkdownFiles(folder).length : 0;
-      const card = stats.createDiv({ cls: `khc-platform-card${f.dv ? " is-clickable" : ""}` });
+      const card = stats.createDiv({ cls: `act-platform-card${f.dv ? " is-clickable" : ""}` });
       card.setAttribute("data-color", f.color);
-      card.createDiv({ text: String(count), cls: "khc-platform-value" });
-      card.createDiv({ text: f.label, cls: "khc-platform-name" });
+      card.createDiv({ text: String(count), cls: "act-platform-value" });
+      card.createDiv({ text: f.label, cls: "act-platform-name" });
       if (f.dv) card.addEventListener("click", () => this.plugin.openPath(f.dv));
     }
   }
@@ -2522,9 +2274,9 @@ class HomeConsoleView extends ItemView {
   /* ========= TIME TAB (T 层 · 方向) ========= */
 
   private async renderTimeTab(container: HTMLElement) {
-    const grid = container.createDiv({ cls: "khc-panel-grid" });
-    const main = grid.createDiv({ cls: "khc-panel-main" });
-    const side = grid.createDiv({ cls: "khc-panel-side" });
+    const grid = container.createDiv({ cls: "act-panel-grid" });
+    const main = grid.createDiv({ cls: "act-panel-main" });
+    const side = grid.createDiv({ cls: "act-panel-side" });
 
     await this.renderCurrentCycleGoals(main);
     await this.renderWeeklyFlow(main);
@@ -2561,11 +2313,11 @@ class HomeConsoleView extends ItemView {
 
     const content = await this.app.vault.cachedRead(file);
 
-    const progressBar = section.createDiv({ cls: "khc-cycle-progress" });
-    const bar = progressBar.createDiv({ cls: "khc-cycle-bar" });
-    const fill = bar.createDiv({ cls: "khc-cycle-fill" });
+    const progressBar = section.createDiv({ cls: "act-cycle-progress" });
+    const bar = progressBar.createDiv({ cls: "act-cycle-bar" });
+    const fill = bar.createDiv({ cls: "act-cycle-fill" });
     fill.style.width = `${Math.round((weekOfCycle / ci.totalWeeks) * 100)}%`;
-    progressBar.createDiv({ text: `第 ${weekOfCycle} 周 / ${ci.totalWeeks} 周`, cls: "khc-cycle-label" });
+    progressBar.createDiv({ text: `第 ${weekOfCycle} 周 / ${ci.totalWeeks} 周`, cls: "act-cycle-label" });
 
     const actionTasks = await this.parseActionTasks();
     const taskByName = new Map<string, ActionTask>();
@@ -2599,24 +2351,24 @@ class HomeConsoleView extends ItemView {
     }
 
     for (const goal of goalSections) {
-      const goalBox = section.createDiv({ cls: "khc-goal-box" });
-      const goalHead = goalBox.createDiv({ cls: "khc-goal-head" });
-      goalHead.createSpan({ text: goal.id, cls: "khc-badge" });
-      const goalLink = goalHead.createEl("a", { text: goal.title, cls: "khc-goal-title", href: "#" });
+      const goalBox = section.createDiv({ cls: "act-goal-box" });
+      const goalHead = goalBox.createDiv({ cls: "act-goal-head" });
+      goalHead.createSpan({ text: goal.id, cls: "act-badge" });
+      const goalLink = goalHead.createEl("a", { text: goal.title, cls: "act-goal-title", href: "#" });
       goalLink.addEventListener("click", (e) => { e.preventDefault(); this.plugin.openPath(cyclePath); });
 
       if (goal.links.length > 0) {
-        const taskList = goalBox.createDiv({ cls: "khc-goal-tasks" });
+        const taskList = goalBox.createDiv({ cls: "act-goal-tasks" });
         for (const linkName of goal.links) {
           const task = taskByName.get(linkName);
           if (!task) continue;
           const status = this.getActionStatus(task);
-          const statusInfo = HomeConsoleView.ACTION_STATUSES.find((s) => s.css === status);
-          const taskRow = taskList.createDiv({ cls: "khc-goal-task-row" });
+          const statusInfo = ActWorkspaceView.ACTION_STATUSES.find((s) => s.css === status);
+          const taskRow = taskList.createDiv({ cls: "act-goal-task-row" });
           if (statusInfo) {
-            taskRow.createSpan({ text: statusInfo.label, cls: `khc-goal-task-status is-${status}` });
+            taskRow.createSpan({ text: statusInfo.label, cls: `act-goal-task-status is-${status}` });
           }
-          const taskLink = taskRow.createEl("a", { text: task.title, cls: "khc-goal-task-name", href: "#" });
+          const taskLink = taskRow.createEl("a", { text: task.title, cls: "act-goal-task-name", href: "#" });
           taskLink.addEventListener("click", (e) => {
             e.preventDefault();
             this.selectedProgressTaskPath = task.filePath;
@@ -2645,8 +2397,8 @@ class HomeConsoleView extends ItemView {
       return;
     }
     for (const file of files.slice(0, 3)) {
-      const row = section.createDiv({ cls: "khc-published-row" });
-      const link = row.createEl("a", { text: file.basename, cls: "khc-file-title", href: "#" });
+      const row = section.createDiv({ cls: "act-published-row" });
+      const link = row.createEl("a", { text: file.basename, cls: "act-file-title", href: "#" });
       link.addEventListener("click", (event) => {
         event.preventDefault();
         this.plugin.openPath(file.path);
@@ -2705,13 +2457,6 @@ class HomeConsoleView extends ItemView {
     this.renderDataTable(section, columns, rows);
   }
 
-  private readStat(container: HTMLElement, label: string, count: number, onClick?: () => void) {
-    const stat = container.createDiv({ cls: `khc-read-stat${onClick ? " is-clickable" : ""}` });
-    stat.createDiv({ text: String(count), cls: "khc-read-count" });
-    stat.createDiv({ text: label, cls: "khc-read-label" });
-    if (onClick) stat.addEventListener("click", onClick);
-  }
-
   private async parseActionTasks(): Promise<ActionTask[]> {
     const folders = [
       { path: this.F.focusAction, id: "11" as const },
@@ -2759,41 +2504,41 @@ class HomeConsoleView extends ItemView {
   }
 
   private section(container: HTMLElement, title: string, label = "", theme = ""): HTMLElement {
-    const section = container.createDiv({ cls: "khc-section" });
+    const section = container.createDiv({ cls: "act-section" });
     section.setAttribute("data-label", label);
     if (theme) section.setAttribute("data-theme", theme);
-    section.createEl("h2", { text: title, cls: "khc-section-title" });
+    section.createEl("h2", { text: title, cls: "act-section-title" });
     return section;
   }
 
   private smallAction(container: HTMLElement, label: string, onClick: () => void) {
-    const action = container.createEl("button", { text: label, cls: "khc-small-action" });
+    const action = container.createEl("button", { text: label, cls: "act-small-action" });
     action.addEventListener("click", onClick);
   }
 
   private sectionInfo(section: HTMLElement, info: { source: string; rule?: string; props?: { name: string; desc: string }[] }) {
-    const title = section.querySelector(".khc-section-title");
+    const title = section.querySelector(".act-section-title");
     if (!title) return;
-    const trigger = createDiv({ cls: "khc-info-trigger" });
-    const iconEl = trigger.createSpan({ cls: "khc-info-icon" });
+    const trigger = createDiv({ cls: "act-info-trigger" });
+    const iconEl = trigger.createSpan({ cls: "act-info-icon" });
     setIcon(iconEl, "info");
 
-    const popup = trigger.createDiv({ cls: "khc-info-popup" });
-    popup.createDiv({ text: "数据来源", cls: "khc-info-heading" });
-    popup.createDiv({ text: info.source, cls: "khc-info-text" });
+    const popup = trigger.createDiv({ cls: "act-info-popup" });
+    popup.createDiv({ text: "数据来源", cls: "act-info-heading" });
+    popup.createDiv({ text: info.source, cls: "act-info-text" });
 
     if (info.rule) {
-      popup.createDiv({ text: "使用规则", cls: "khc-info-heading" });
-      popup.createDiv({ text: info.rule, cls: "khc-info-text" });
+      popup.createDiv({ text: "使用规则", cls: "act-info-heading" });
+      popup.createDiv({ text: info.rule, cls: "act-info-text" });
     }
 
     if (info.props && info.props.length > 0) {
-      popup.createDiv({ text: "相关属性", cls: "khc-info-heading" });
-      const tbl = popup.createEl("table", { cls: "khc-info-props" });
+      popup.createDiv({ text: "相关属性", cls: "act-info-heading" });
+      const tbl = popup.createEl("table", { cls: "act-info-props" });
       for (const p of info.props) {
         const row = tbl.createEl("tr");
-        row.createEl("td", { text: p.name, cls: "khc-info-prop-name" });
-        row.createEl("td", { text: p.desc, cls: "khc-info-prop-desc" });
+        row.createEl("td", { text: p.name, cls: "act-info-prop-name" });
+        row.createEl("td", { text: p.desc, cls: "act-info-prop-desc" });
       }
     }
 
@@ -2801,8 +2546,8 @@ class HomeConsoleView extends ItemView {
   }
 
   private renderDataTable(container: HTMLElement, columns: { key: string; label: string; width?: string; cls?: string }[], rows: { data: Record<string, string>; onClick?: () => void }[]) {
-    const wrapper = container.createDiv({ cls: "khc-data-table-wrap" });
-    const table = wrapper.createEl("table", { cls: "khc-data-table" });
+    const wrapper = container.createDiv({ cls: "act-data-table-wrap" });
+    const table = wrapper.createEl("table", { cls: "act-data-table" });
     const thead = table.createEl("thead");
     const hr = thead.createEl("tr");
     for (const col of columns) {
@@ -2825,12 +2570,12 @@ class HomeConsoleView extends ItemView {
   }
 
   private empty(container: HTMLElement, text: string) {
-    container.createDiv({ text, cls: "khc-empty" });
+    container.createDiv({ text, cls: "act-empty" });
   }
 }
 
-export default class HomeConsolePlugin extends Plugin {
-  settings: HomeConsoleSettings = DEFAULT_SETTINGS;
+export default class ActWorkspacePlugin extends Plugin {
+  settings: ActWorkspaceSettings = DEFAULT_SETTINGS;
   get F() { return this.settings.folders; }
   private completedDidaSyncing = false;
   private themeStyleEl: HTMLStyleElement | null = null;
@@ -2838,11 +2583,11 @@ export default class HomeConsolePlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     await this.applyTheme();
-    this.addSettingTab(new HomeConsoleSettingTab(this.app, this));
-    this.registerView(VIEW_TYPE, (leaf) => new HomeConsoleView(leaf, this));
+    this.addSettingTab(new ActWorkspaceSettingTab(this.app, this));
+    this.registerView(VIEW_TYPE, (leaf) => new ActWorkspaceView(leaf, this));
     this.addRibbonIcon("layout-dashboard", "ACT 工作台", () => this.activateView());
     this.addCommand({
-      id: "open-act-console",
+      id: "open-act-workspace",
       name: "打开 ACT 工作台",
       callback: () => this.activateView()
     });
@@ -2850,17 +2595,7 @@ export default class HomeConsolePlugin extends Plugin {
       window.setTimeout(() => {
         void this.activateView();
       }, STARTUP_AUTO_OPEN_DELAY_MS);
-      if (this.settings.dida.enabled) {
-        window.setTimeout(() => {
-          void this.syncCompletedDidaToWeekly({ silent: true });
-        }, STARTUP_SYNC_DELAY_MS);
-      }
     });
-    if (this.settings.dida.enabled) {
-      this.registerInterval(window.setInterval(() => {
-        void this.syncCompletedDidaToWeekly({ silent: true });
-      }, this.settings.dida.syncIntervalMs));
-    }
   }
 
   onunload() {
@@ -2881,6 +2616,7 @@ export default class HomeConsolePlugin extends Plugin {
       else this.settings.dida.completedLogTarget = "custom";
     }
     this.settings.progressLog = Object.assign({}, DEFAULT_PROGRESS_LOG, saved?.progressLog);
+    if ((this.settings.terminalMode as string) === "termy") this.settings.terminalMode = "terminal";
   }
 
   async saveSettings() {
@@ -2889,12 +2625,12 @@ export default class HomeConsolePlugin extends Plugin {
 
   async applyTheme() {
     if (!THEME_CSS) {
-      console.error("[HomeConsole] No embedded theme CSS available");
+      console.error("[ACT] No embedded theme CSS available");
       return;
     }
     this.removeThemeStyle();
     this.themeStyleEl = document.createElement("style");
-    this.themeStyleEl.id = "khc-theme-style";
+    this.themeStyleEl.id = "act-theme-style";
     this.themeStyleEl.textContent = THEME_CSS;
     document.head.appendChild(this.themeStyleEl);
   }
@@ -2930,8 +2666,7 @@ export default class HomeConsolePlugin extends Plugin {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (response.status >= 400) throw new Error(`Dida complete task failed: ${response.status}`);
-      const added = await this.syncCompletedDidaToWeekly({ silent: true });
-      new Notice(added > 0 ? `任务已完成，写入 ${added} 条完成记录` : "任务已完成");
+      new Notice("任务已完成");
       return true;
     } catch (error) {
       console.error("Failed to complete Dida task", error);
@@ -2979,7 +2714,7 @@ export default class HomeConsolePlugin extends Plugin {
         const updated = await this.updateDidaTask(task, title, body, dueDate, dueTime, priority);
         if (!updated) throw new Error("Failed to update Dida task");
         const view = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
-        if (view instanceof HomeConsoleView) {
+        if (view instanceof ActWorkspaceView) {
           view.invalidateDidaActiveCache();
           await view.render();
         }
@@ -3411,7 +3146,6 @@ export default class HomeConsolePlugin extends Plugin {
     });
     if (changed) {
       new Notice("行动项已完成");
-      void this.syncActionCompletedToWeekly();
     } else {
       new Notice("行动项已经是完成状态");
     }
@@ -3432,11 +3166,6 @@ export default class HomeConsolePlugin extends Plugin {
     await this.app.workspace.openLinkText(path, "", "split");
   }
 
-  async openOrCreateToday() {
-    const today = new Date();
-    await this.openOrCreateDaily(`${this.F.daily}/${formatDailyDate(today)}.md`);
-  }
-
   async openOrCreateDaily(path: string) {
     const existing = this.app.vault.getAbstractFileByPath(path);
     if (existing instanceof TFile) {
@@ -3453,17 +3182,6 @@ export default class HomeConsolePlugin extends Plugin {
     const templateFile = this.app.vault.getAbstractFileByPath(templatePath);
     if (templateFile instanceof TFile) return await this.app.vault.cachedRead(templateFile);
     return `---\n已回顾: false\n---\n\n## 今日重点\n\n\n\n---\n\n## 今日总结\n\n\n\n---\n\n## 今日创建的笔记\n\n![[base-当日创建笔记.base]]\n`;
-  }
-
-  async openOrCreateWeekly(path: string) {
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof TFile) {
-      await this.openPath(path);
-      return;
-    }
-    const weekId = path.split("/").pop()?.replace(".md", "") ?? formatWeekId(new Date());
-    await this.app.vault.create(path, this.buildWeeklyTemplate(weekId));
-    await this.openPathInSide(path);
   }
 
   private getPromptDraft(key: string): NotePromptValue {
@@ -3511,26 +3229,6 @@ export default class HomeConsolePlugin extends Plugin {
     ).open();
   }
 
-  captureIdea() {
-    this.openNotePrompt("idea", "记录想法", "想法标题", "补充想法、背景、触发点...", async ({ title, body }) => {
-      const now = new Date();
-      const path = `${this.F.inbox}/${formatShortDateTime(now)}-${safeFileName(title)}.md`;
-      const content = `---\ncreated: ${formatDateTime(now)}\n---\n\n# ${title}\n\n${body ? `${body}\n` : ""}`;
-      await this.app.vault.create(path, content);
-      await this.openPathInSide(path);
-    });
-  }
-
-  captureTask() {
-    this.openNotePrompt("task", "记录任务", "任务标题", "补充任务背景、下一步、约束或判断...", async ({ title, body }) => {
-      const now = new Date();
-      const path = `${this.F.activeAction}/T${String(now.getFullYear()).slice(2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${safeFileName(title)}.md`;
-      const content = `---\ncreated: ${formatDateOnly(now)}\n---\n\n# ${title}\n\n${body ? `${body}\n` : ""}`;
-      await this.app.vault.create(path, content);
-      await this.openPathInSide(path);
-    });
-  }
-
   captureDidaTask() {
     this.openNotePrompt(
       "dida-task",
@@ -3541,7 +3239,7 @@ export default class HomeConsolePlugin extends Plugin {
         const created = await this.createDidaTask(title, body, dueDate, dueTime, priority);
         if (!created) throw new Error("Failed to create Dida task");
         const view = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
-        if (view instanceof HomeConsoleView) {
+        if (view instanceof ActWorkspaceView) {
           view.invalidateDidaActiveCache();
           await view.render();
         }
@@ -3555,16 +3253,6 @@ export default class HomeConsolePlugin extends Plugin {
         defaultPriority: "0"
       }
     );
-  }
-
-  captureContentIdea() {
-    this.openNotePrompt("content-idea", "记录内容灵感", "灵感标题", "这条内容想解决什么问题？有什么角度、案例或表达？", async ({ title, body }) => {
-      const now = new Date();
-      const path = `${this.F.inbox}/${formatShortDateTime(now)}-内容灵感-${safeFileName(title)}.md`;
-      const content = `---\ncreated: ${formatDateTime(now)}\n---\n\n# 内容灵感：${title}\n\n${body ? `${body}\n\n` : ""}## 可能角度\n\n`;
-      await this.app.vault.create(path, content);
-      await this.openPathInSide(path);
-    });
   }
 
   captureIndexCard() {
@@ -3591,7 +3279,7 @@ export default class HomeConsolePlugin extends Plugin {
           ].join("\n"));
           await this.openPathInSide(file.path);
           const view = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
-          if (view instanceof HomeConsoleView) await view.render();
+          if (view instanceof ActWorkspaceView) await view.render();
         }
       );
     });
@@ -3621,7 +3309,7 @@ export default class HomeConsolePlugin extends Plugin {
           ].join("\n"));
           await this.openPathInSide(file.path);
           const view = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
-          if (view instanceof HomeConsoleView) await view.render();
+          if (view instanceof ActWorkspaceView) await view.render();
         }
       );
     });
@@ -3630,25 +3318,15 @@ export default class HomeConsolePlugin extends Plugin {
   private openChoiceModal<T extends { label: string }>(title: string, choices: T[], onChoose: (choice: T) => void) {
     const modal = new Modal(this.app);
     modal.titleEl.setText(title);
-    modal.contentEl.addClass("khc-choice-modal");
+    modal.contentEl.addClass("act-choice-modal");
     for (const choice of choices) {
-      const btn = modal.contentEl.createEl("button", { text: choice.label, cls: "khc-folder-choice-btn", attr: { type: "button" } });
+      const btn = modal.contentEl.createEl("button", { text: choice.label, cls: "act-folder-choice-btn", attr: { type: "button" } });
       btn.addEventListener("click", () => {
         modal.close();
         onChoose(choice);
       });
     }
     modal.open();
-  }
-
-  captureTopic() {
-    this.openNotePrompt("topic", "新建选题", "选题标题", "补充选题动机、受众、核心问题或素材...", async ({ title, body }) => {
-      const now = new Date();
-      const path = `${TOPIC_POOL_FOLDER}/选题-${safeFileName(title)}.md`;
-      const content = `---\ncreated: ${formatDateOnly(now)}\n---\n\n# ${title}\n\n${body ? `${body}\n` : ""}`;
-      await this.app.vault.create(path, content);
-      await this.openPathInSide(path);
-    });
   }
 
   openDailyCapture() {
@@ -3667,11 +3345,6 @@ export default class HomeConsolePlugin extends Plugin {
   async openCommandInTerminal(command: string, successMessage: string, fallbackMessage = "已复制命令，请手动粘贴到终端") {
     const mode = this.settings.terminalMode;
 
-    if (mode === "termy") {
-      const opened = await this.openInTermy(command);
-      if (opened) { new Notice(successMessage); return; }
-    }
-
     if (mode === "terminal") {
       const opened = await this.openInTerminalPlugin(command);
       if (opened) { new Notice(successMessage); return; }
@@ -3684,21 +3357,6 @@ export default class HomeConsolePlugin extends Plugin {
     }
 
     await this.copyText(command, fallbackMessage);
-  }
-
-  private async openInTermy(command: string): Promise<boolean> {
-    const commands = (this.app as App & { commands?: { executeCommandById?: (id: string) => boolean | void } }).commands;
-    if (!commands?.executeCommandById) return false;
-    commands.executeCommandById("termy:open-terminal");
-    await new Promise((r) => setTimeout(r, 300));
-    const leaves = this.app.workspace.getLeavesOfType("terminal-view");
-    const leaf = leaves[leaves.length - 1];
-    if (!leaf) return false;
-    const termView = leaf.view as unknown as { getTerminalInstance?: () => { sendText?: (text: string) => void } };
-    const instance = termView.getTerminalInstance?.();
-    if (!instance?.sendText) return false;
-    instance.sendText(command + "\n");
-    return true;
   }
 
   private async openInTerminalPlugin(command: string): Promise<boolean> {
@@ -3715,14 +3373,6 @@ export default class HomeConsolePlugin extends Plugin {
     terminal.paste(command + "\n");
     return true;
   }
-
-  openTerminalWindow() {
-    const vaultPath = this.getVaultBasePath();
-    const command = vaultPath ? `cd ${shellQuote(vaultPath)}` : "";
-    void this.openCommandInTerminal(command, "已打开系统终端");
-  }
-
-
 
   private buildSkillCommand(skillName: string): string {
     const vaultPath = this.getVaultBasePath() ?? ".";
@@ -3785,7 +3435,7 @@ export default class HomeConsolePlugin extends Plugin {
     if (!repo) throw new Error("未配置 GitHub 仓库地址");
     const resp = await requestUrl({
       url: `https://api.github.com/repos/${repo}/releases/latest`,
-      headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "obsidian-act-console" },
+      headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "act-workspace" },
     });
     const latest = resp.json.tag_name?.replace(/^v/, "") ?? "";
     if (!latest) throw new Error("无法获取最新版本号");
@@ -3797,7 +3447,7 @@ export default class HomeConsolePlugin extends Plugin {
     if (!repo) throw new Error("未配置 GitHub 仓库地址");
     const resp = await requestUrl({
       url: `https://api.github.com/repos/${repo}/releases/latest`,
-      headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "obsidian-act-console" },
+      headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "act-workspace" },
     });
     const release = resp.json;
     const latest = release.tag_name?.replace(/^v/, "") ?? "";
@@ -3898,11 +3548,11 @@ class FileSuggest extends AbstractInputSuggest<string> {
   }
 }
 
-class HomeConsoleSettingTab extends PluginSettingTab {
-  plugin: HomeConsolePlugin;
+class ActWorkspaceSettingTab extends PluginSettingTab {
+  plugin: ActWorkspacePlugin;
   private activeTab = 0;
 
-  constructor(app: App, plugin: HomeConsolePlugin) {
+  constructor(app: App, plugin: ActWorkspacePlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -3910,21 +3560,21 @@ class HomeConsoleSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.addClass("khc-settings");
+    containerEl.addClass("act-settings");
 
-    const tabs = ["行动", "时间", "知识", "滴答清单", "Skill", "更新"];
+    const tabs = ["行动", "时间", "知识", "滴答清单", "Skill", "更新", "支持"];
     if (this.activeTab >= tabs.length) this.activeTab = 0;
-    const tabBar = containerEl.createDiv({ cls: "khc-settings-tab-bar" });
-    const contentEl = containerEl.createDiv({ cls: "khc-settings-content" });
+    const tabBar = containerEl.createDiv({ cls: "act-settings-tab-bar" });
+    const contentEl = containerEl.createDiv({ cls: "act-settings-content" });
 
     for (let i = 0; i < tabs.length; i++) {
       const tab = tabBar.createDiv({
         text: tabs[i],
-        cls: `khc-settings-tab${i === this.activeTab ? " is-active" : ""}`
+        cls: `act-settings-tab${i === this.activeTab ? " is-active" : ""}`
       });
       tab.addEventListener("click", () => {
         this.activeTab = i;
-        tabBar.querySelectorAll(".khc-settings-tab").forEach((el, idx) => {
+        tabBar.querySelectorAll(".act-settings-tab").forEach((el, idx) => {
           el.toggleClass("is-active", idx === i);
         });
         this.renderTabContent(contentEl);
@@ -3932,23 +3582,28 @@ class HomeConsoleSettingTab extends PluginSettingTab {
     }
 
     this.renderTabContent(contentEl);
+    this.renderFooter(containerEl);
     this.addSettingsStyles(containerEl);
   }
 
-  private renderUpdateSection(container: HTMLElement) {
-    const section = container.createDiv({ cls: "khc-update-section" });
-    const header = section.createDiv({ cls: "khc-update-header" });
-    header.createSpan({ text: `GitHub 自动更新 · ACT 工作台 v${this.plugin.manifest.version}`, cls: "khc-update-version" });
+  private renderFooter(container: HTMLElement) {
+    container.createDiv({ cls: "act-settings-footer" });
+  }
 
-    const statusEl = section.createDiv({ cls: "khc-update-status" });
+  private renderUpdateSection(container: HTMLElement) {
+    const section = container.createDiv({ cls: "act-update-section" });
+    const header = section.createDiv({ cls: "act-update-header" });
+    header.createSpan({ text: `ACT 工作台  v${this.plugin.manifest.version}`, cls: "act-update-version" });
+
+    const statusEl = section.createDiv({ cls: "act-update-status" });
     section.createDiv({
-      cls: "khc-update-help",
-      text: "从 GitHub 最新 Release 检查并替换 main.js / manifest.json / styles.css。发布公开版本时不要上传 data.json。"
+      cls: "act-update-help",
+      text: "点击「检查更新」获取最新版本。更新不会影响你的配置和数据。"
     });
 
-    const btnGroup = section.createDiv({ cls: "khc-update-actions" });
+    const btnGroup = section.createDiv({ cls: "act-update-actions" });
 
-    const checkBtn = btnGroup.createEl("button", { text: "检查更新", cls: "khc-update-btn" });
+    const checkBtn = btnGroup.createEl("button", { text: "检查更新", cls: "act-update-btn" });
     checkBtn.addEventListener("click", async () => {
       checkBtn.disabled = true;
       checkBtn.textContent = "检查中...";
@@ -3956,15 +3611,15 @@ class HomeConsoleSettingTab extends PluginSettingTab {
       try {
         const result = await this.plugin.checkForUpdate();
         if (result.hasUpdate) {
-          statusEl.createSpan({ text: `发现新版本 v${result.latest}`, cls: "khc-update-available" });
-          const updateBtn = statusEl.createEl("button", { text: "立即更新", cls: "khc-update-btn is-primary" });
+          statusEl.createSpan({ text: `发现新版本 v${result.latest}`, cls: "act-update-available" });
+          const updateBtn = statusEl.createEl("button", { text: "立即更新", cls: "act-update-btn is-primary" });
           updateBtn.addEventListener("click", async () => {
             updateBtn.disabled = true;
             updateBtn.textContent = "下载中...";
             try {
               const version = await this.plugin.performUpdate();
               statusEl.empty();
-              statusEl.createSpan({ text: `已更新到 v${version}，请重启 Obsidian 或重新加载插件`, cls: "khc-update-success" });
+              statusEl.createSpan({ text: `已更新到 v${version}，请重启 Obsidian 或重新加载插件`, cls: "act-update-success" });
               new Notice(`ACT 工作台已更新到 v${version}，请重新加载插件`);
             } catch (err) {
               updateBtn.disabled = false;
@@ -3973,10 +3628,10 @@ class HomeConsoleSettingTab extends PluginSettingTab {
             }
           });
         } else {
-          statusEl.createSpan({ text: "已是最新版本 ✓", cls: "khc-update-latest" });
+          statusEl.createSpan({ text: "已是最新版本 ✓", cls: "act-update-latest" });
         }
       } catch (err) {
-        statusEl.createSpan({ text: `检查失败：${err instanceof Error ? err.message : String(err)}`, cls: "khc-update-error" });
+        statusEl.createSpan({ text: `检查失败：${err instanceof Error ? err.message : String(err)}`, cls: "act-update-error" });
       } finally {
         checkBtn.disabled = false;
         checkBtn.textContent = "检查更新";
@@ -3984,10 +3639,10 @@ class HomeConsoleSettingTab extends PluginSettingTab {
     });
 
     new Setting(section)
-      .setName("GitHub 更新仓库")
-      .setDesc("可填写 KivenBig/obsidian-act-console，也可填写完整 GitHub 地址。")
+      .setName("更新源")
+      .setDesc("填写 GitHub 仓库地址或 owner/repo，用于从 Releases 检查更新。")
       .addText((text) => {
-        text.setPlaceholder("KivenBig/obsidian-act-console");
+        text.setPlaceholder("owner/act-workspace");
         text.setValue(this.plugin.settings.updateRepo);
         text.inputEl.style.width = "100%";
         text.onChange(async (value) => {
@@ -4018,7 +3673,28 @@ class HomeConsoleSettingTab extends PluginSettingTab {
       case 3: this.renderDidaTab(container); break;
       case 4: this.renderSkillTab(container); break;
       case 5: this.renderUpdateSection(container); break;
+      case 6: this.renderSupportTab(container); break;
     }
+  }
+
+  private renderSupportTab(container: HTMLElement) {
+    const card = container.createDiv({ cls: "act-support-card" });
+    card.createEl("h2", { text: "支持与资源" });
+    card.createEl("p", { text: "公众号：kiven大汉堡（同名）", cls: "act-support-lead" });
+    card.createEl("div", { text: "⬇️", cls: "act-support-arrow" });
+
+    const list = card.createDiv({ cls: "act-support-list" });
+    list.createEl("p", { text: "往期个人生产力视频合集" });
+    list.createEl("p", { text: "Obsidian 官方同步拼车：已拼 4000+" });
+    list.createEl("p", { text: "Obsidian + AI 笔记系统教程：学员 200+" });
+
+    const blogLine = card.createEl("p", { cls: "act-support-blog" });
+    blogLine.appendText("详情介绍与购买，请查看个人博客：");
+    const link = blogLine.createEl("a", { text: "kivenbig.com", href: "https://kivenbig.com" });
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      window.open("https://kivenbig.com", "_blank");
+    });
   }
 
   private folderSetting(container: HTMLElement, key: keyof FolderPaths, label: string, desc: string) {
@@ -4039,7 +3715,7 @@ class HomeConsoleSettingTab extends PluginSettingTab {
 
   private renderActionTab(container: HTMLElement) {
     container.createDiv({
-      text: "行动层对应的 Vault 文件夹路径。修改后需重新打开 Console 生效。",
+      text: "行动层对应的 Vault 文件夹路径。修改后需重新打开工作台生效。",
       cls: "setting-item-description"
     });
 
@@ -4048,6 +3724,18 @@ class HomeConsoleSettingTab extends PluginSettingTab {
     this.folderSetting(container, "activeAction", "活跃跟进", "跟进任务文件夹");
     this.folderSetting(container, "maybeAction", "将来也许", "暂缓任务文件夹");
     this.folderSetting(container, "thought", "闪念", "ACT 闪念文件夹");
+
+    container.createEl("h3", { text: "任务清单" });
+    new Setting(container)
+      .setName("隐藏已完成的任务笔记")
+      .setDesc("开启后，所有行动项均已完成的任务笔记不会出现在「任务清单 · 今日」中。关闭则始终显示。")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.hideCompletedNotes);
+        toggle.onChange(async (value) => {
+          this.plugin.settings.hideCompletedNotes = value;
+          await this.plugin.saveSettings();
+        });
+      });
 
     container.createEl("h3", { text: "进展记录" });
     new Setting(container)
@@ -4089,7 +3777,7 @@ class HomeConsoleSettingTab extends PluginSettingTab {
           this.plugin.settings.cycleMode = value as CycleMode;
           await this.plugin.saveSettings();
           const view = this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
-          if (view instanceof HomeConsoleView) await view.render();
+          if (view instanceof ActWorkspaceView) await view.render();
         });
       });
 
@@ -4103,7 +3791,7 @@ class HomeConsoleSettingTab extends PluginSettingTab {
 
   private renderCardTab(container: HTMLElement) {
     container.createDiv({
-      text: "知识层对应的 Vault 文件夹路径。修改后需重新打开 Console 生效。",
+      text: "知识层对应的 Vault 文件夹路径。修改后需重新打开工作台生效。",
       cls: "setting-item-description"
     });
 
@@ -4151,7 +3839,7 @@ class HomeConsoleSettingTab extends PluginSettingTab {
           this.plugin.settings.dida.enabled = value;
           await this.plugin.saveSettings();
           const view = this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
-          if (view instanceof HomeConsoleView) await view.render();
+          if (view instanceof ActWorkspaceView) await view.render();
         });
       });
 
@@ -4220,7 +3908,7 @@ class HomeConsoleSettingTab extends PluginSettingTab {
         });
       });
 
-    const guideEl = container.createDiv({ cls: "khc-settings-guide" });
+    const guideEl = container.createDiv({ cls: "act-settings-guide" });
     guideEl.createEl("h4", { text: "如何获取 Access Token" });
     const steps = guideEl.createEl("ol");
     steps.createEl("li", { text: "前往网页版滴答清单（dida365.com）并登录" });
@@ -4234,7 +3922,6 @@ class HomeConsoleSettingTab extends PluginSettingTab {
       .setName("终端模式")
       .setDesc("点击 Skill 按钮时打开哪个终端")
       .addDropdown((dropdown) => {
-        dropdown.addOption("termy", "Termy 插件");
         dropdown.addOption("terminal", "Terminal 插件");
         dropdown.addOption("system", "系统终端（macOS/Windows）");
         dropdown.addOption("copy", "仅复制命令");
@@ -4286,7 +3973,7 @@ class HomeConsoleSettingTab extends PluginSettingTab {
         });
     }
 
-    const skillListEl = container.createDiv({ cls: "khc-settings-skill-list" });
+    const skillListEl = container.createDiv({ cls: "act-settings-skill-list" });
     this.renderSkillList(skillListEl);
   }
 
@@ -4338,13 +4025,13 @@ class HomeConsoleSettingTab extends PluginSettingTab {
   private addSettingsStyles(container: HTMLElement) {
     const style = container.createEl("style");
     style.textContent = `
-      .khc-settings-tab-bar {
+      .act-settings-tab-bar {
         display: flex;
         gap: 4px;
         border-bottom: 1px solid var(--background-modifier-border);
         margin-bottom: 16px;
       }
-      .khc-settings-tab {
+      .act-settings-tab {
         padding: 8px 16px;
         cursor: pointer;
         font-size: 14px;
@@ -4353,18 +4040,18 @@ class HomeConsoleSettingTab extends PluginSettingTab {
         transition: color 0.15s, border-color 0.15s;
         user-select: none;
       }
-      .khc-settings-tab:hover {
+      .act-settings-tab:hover {
         color: var(--text-normal);
       }
-      .khc-settings-tab.is-active {
+      .act-settings-tab.is-active {
         color: var(--text-accent);
         border-bottom-color: var(--text-accent);
         font-weight: 600;
       }
-      .khc-settings-content {
+      .act-settings-content {
         min-height: 200px;
       }
-      .khc-settings-guide {
+      .act-settings-guide {
         margin-top: 16px;
         padding: 12px 16px;
         border-radius: 8px;
@@ -4373,42 +4060,82 @@ class HomeConsoleSettingTab extends PluginSettingTab {
         color: var(--text-muted);
         line-height: 1.6;
       }
-      .khc-settings-guide h4 {
+      .act-settings-guide h4 {
         margin: 0 0 8px 0;
         font-size: 13px;
         font-weight: 600;
         color: var(--text-normal);
       }
-      .khc-settings-guide ol {
+      .act-settings-guide ol {
         margin: 0;
         padding-left: 20px;
       }
-      .khc-update-section {
+      .act-support-card {
+        max-width: 760px;
+        padding: 28px 32px;
+        border-radius: 18px;
+        background: var(--background-primary);
+        border: 1px solid var(--background-modifier-border);
+        color: var(--text-normal);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+      }
+      .act-support-card h2 {
+        margin: 0 0 14px 0;
+        font-size: 24px;
+        font-weight: 800;
+        color: var(--text-normal);
+      }
+      .act-support-card p {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.75;
+        color: var(--text-normal);
+      }
+      .act-support-lead {
+        font-weight: 700;
+      }
+      .act-support-arrow {
+        margin: 8px 0 14px 0;
+        font-size: 22px;
+        line-height: 1;
+      }
+      .act-support-list {
+        margin: 0 0 6px 24px;
+      }
+      .act-support-blog {
+        font-weight: 700;
+      }
+      .act-support-blog a {
+        color: var(--text-accent);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .act-update-section {
         padding: 16px 0;
         margin-bottom: 12px;
         border-bottom: 1px solid var(--background-modifier-border);
       }
-      .khc-update-header {
+      .act-update-header {
         display: flex;
         align-items: center;
         gap: 12px;
         margin-bottom: 10px;
       }
-      .khc-update-version {
+      .act-update-version {
         font-size: 15px;
         font-weight: 600;
         color: var(--text-normal);
       }
-      .khc-update-actions {
+      .act-update-actions {
         margin-bottom: 10px;
       }
-      .khc-update-help {
+      .act-update-help {
         margin: 0 0 12px 0;
         font-size: 12px;
         line-height: 1.5;
         color: var(--text-muted);
       }
-      .khc-update-btn {
+      .act-update-btn {
         padding: 4px 14px;
         font-size: 13px;
         border-radius: 6px;
@@ -4417,39 +4144,81 @@ class HomeConsoleSettingTab extends PluginSettingTab {
         background: var(--background-secondary);
         color: var(--text-normal);
       }
-      .khc-update-btn:hover {
+      .act-update-btn:hover {
         background: var(--background-modifier-hover);
       }
-      .khc-update-btn.is-primary {
+      .act-update-btn.is-primary {
         background: var(--interactive-accent);
         color: var(--text-on-accent);
         border-color: var(--interactive-accent);
         margin-left: 10px;
       }
-      .khc-update-btn:disabled {
+      .act-update-btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
       }
-      .khc-update-status {
+      .act-update-status {
         display: flex;
         align-items: center;
         min-height: 28px;
         font-size: 13px;
         margin-bottom: 8px;
       }
-      .khc-update-available {
+      .act-update-available {
         color: var(--text-accent);
         font-weight: 500;
       }
-      .khc-update-latest {
+      .act-update-latest {
         color: var(--text-success, #2d5a3d);
       }
-      .khc-update-success {
+      .act-update-success {
         color: var(--text-success, #2d5a3d);
         font-weight: 500;
       }
-      .khc-update-error {
+      .act-update-error {
         color: var(--text-error);
+      }
+      .act-settings-footer {
+        margin-top: 32px;
+        padding: 20px;
+        border-top: 1px solid var(--background-modifier-border);
+        background: var(--background-secondary);
+        border-radius: 8px;
+        font-size: 13px;
+        line-height: 1.8;
+        color: var(--text-muted);
+      }
+      .act-settings-footer h3 {
+        margin: 0 0 10px 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-normal);
+      }
+      .act-settings-footer p {
+        margin: 6px 0;
+      }
+      .act-footer-links {
+        margin: 8px 0 8px 16px;
+      }
+      .act-footer-link-item {
+        position: relative;
+        padding-left: 12px;
+      }
+      .act-footer-link-item::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: var(--text-faint);
+      }
+      .act-footer-blog-link {
+        color: var(--text-accent);
+        text-decoration: underline;
+        cursor: pointer;
       }
     `;
   }

@@ -13,7 +13,7 @@ ACT 工作台是一个 Obsidian 仪表盘插件，用于把行动、时间、知
 
 ## 安装
 
-1. 下载 Release 中的 `act-console-x.y.z.zip`。
+1. 下载 Release 中的 `act-workspace-x.y.z.zip`。
 2. 解压后把文件夹放入 Obsidian Vault 的 `.obsidian/plugins/` 目录。
 3. 在 Obsidian 设置 → 社区插件中启用「ACT 工作台」。
 
@@ -22,7 +22,7 @@ ACT 工作台是一个 Obsidian 仪表盘插件，用于把行动、时间、知
 插件配置页支持填写 GitHub 仓库，例如：
 
 ```text
-KivenBig/obsidian-act-console
+owner/act-workspace
 ```
 
 也可以填写完整地址：
@@ -57,4 +57,3 @@ npm run build
 - `.DS_Store`
 - 本地绝对路径
 - API Token 或个人账号信息
-
