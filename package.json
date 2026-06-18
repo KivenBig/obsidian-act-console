@@ -1,6 +1,6 @@
 {
   "name": "act-workspace",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "ACT workspace dashboard for Obsidian.",
   "main": "main.js",
   "scripts": {
