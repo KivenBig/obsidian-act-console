@@ -3486,7 +3486,7 @@ export default class ActWorkspacePlugin extends Plugin {
     return false;
   }
 
-  private lastUpdateCheck = 0;
+  private updateCheckTimes: number[] = [];
 
   private getUpdateRepo(): string {
     return normalizeGitHubRepo(this.settings.updateRepo) || DEFAULT_UPDATE_REPO;
@@ -3501,18 +3501,26 @@ export default class ActWorkspacePlugin extends Plugin {
 
   async checkForUpdate(): Promise<{ hasUpdate: boolean; latest: string; current: string }> {
     const now = Date.now();
-    if (now - this.lastUpdateCheck < UPDATE_CHECK_INTERVAL_MS) {
-      throw new Error("检查过于频繁，请稍后再试");
+    this.updateCheckTimes = this.updateCheckTimes.filter((t) => now - t < UPDATE_CHECK_INTERVAL_MS);
+    if (this.updateCheckTimes.length >= 2) {
+      const oldest = this.updateCheckTimes[0];
+      const remain = Math.ceil((UPDATE_CHECK_INTERVAL_MS - (now - oldest)) / 1000);
+      throw new Error(`请 ${remain} 秒后再试`);
     }
-    this.lastUpdateCheck = now;
+    this.updateCheckTimes.push(now);
     const repo = this.getUpdateRepo();
-    const resp = await requestUrl({
-      url: `https://api.github.com/repos/${repo}/releases/latest`,
-      headers: this.getUpdateHeaders(),
-    });
-    const latest = resp.json.tag_name?.replace(/^v/, "") ?? "";
-    if (!latest) throw new Error("无法获取最新版本号");
-    return { hasUpdate: latest !== this.manifest.version, latest, current: this.manifest.version };
+    try {
+      const resp = await requestUrl({
+        url: `https://api.github.com/repos/${repo}/releases/latest`,
+        headers: this.getUpdateHeaders(),
+      });
+      const latest = resp.json.tag_name?.replace(/^v/, "") ?? "";
+      if (!latest) throw new Error("无法获取最新版本号");
+      return { hasUpdate: latest !== this.manifest.version, latest, current: this.manifest.version };
+    } catch (err) {
+      this.updateCheckTimes.pop();
+      throw err;
+    }
   }
 
   async performUpdate(): Promise<string> {
