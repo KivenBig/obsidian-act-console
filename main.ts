@@ -139,6 +139,12 @@ interface ProgressLogSettings {
   format: ProgressLogFormat;
 }
 
+interface TemplatePaths {
+  taskNote: string;
+  weekly: string;
+  daily: string;
+}
+
 interface ActWorkspaceSettings {
   promptDrafts: Record<string, NotePromptValue>;
   progressDrafts: Record<string, { text: string; type: string }>;
@@ -154,6 +160,7 @@ interface ActWorkspaceSettings {
   updateToken: string;
   hideCompletedNotes: boolean;
   cardVisibility: Record<string, boolean>;
+  templates: TemplatePaths;
 }
 
 const DEFAULT_FOLDERS: FolderPaths = {
@@ -209,7 +216,8 @@ const DEFAULT_SETTINGS: ActWorkspaceSettings = {
   updateRepo: "",
   updateToken: "",
   hideCompletedNotes: false,
-  cardVisibility: { mainCard: true, bibCard: true, indexCard: true, newCard: false }
+  cardVisibility: { mainCard: true, bibCard: true, indexCard: true, newCard: false },
+  templates: { taskNote: "", weekly: "", daily: "" }
 };
 
 function pad(n: number): string {
@@ -1512,7 +1520,7 @@ class ActWorkspaceView extends ItemView {
             const now = new Date();
             const datePrefix = `${String(now.getFullYear()).slice(2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
             const path = `${choice.path}/${datePrefix}-${safeFileName(title)}.md`;
-            const content = `---\ntags:\n  - a-任务笔记\ncreated: ${formatDateOnly(now)}\nt-deadline:\npriority:\nAI 备注:\n---\n## 下步行动\n\n\n## 进展记录\n\n\n## 背景目标\n\n${noteBody ? `${noteBody}\n` : ""}`;
+            const content = await this.plugin.buildTaskNoteContent(noteBody);
             await this.app.vault.create(path, content);
             this.selectedProgressTaskPath = path;
             await this.render();
@@ -1534,7 +1542,7 @@ class ActWorkspaceView extends ItemView {
         const now = new Date();
         const datePrefix = `${String(now.getFullYear()).slice(2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
         const path = `${tab.folder}/${datePrefix}-${safeFileName(title)}.md`;
-        const content = `---\ntags:\n  - a-任务笔记\ncreated: ${formatDateOnly(now)}\nt-deadline:\npriority:\nAI 备注:\n---\n## 下步行动\n\n\n## 进展记录\n\n\n## 背景目标\n\n${noteBody ? `${noteBody}\n` : ""}`;
+        const content = await this.plugin.buildTaskNoteContent(noteBody);
         await this.app.vault.create(path, content);
         await this.render();
         await this.plugin.openPathInSide(path);
@@ -3083,13 +3091,20 @@ export default class ActWorkspacePlugin extends Plugin {
     throw new Error(`Failed to create note: ${candidate}`);
   }
 
-  private buildWeeklyTemplate(weekId: string): string {
+  private async buildWeeklyTemplate(weekId: string): Promise<string> {
     const date = weekIdToDate(weekId);
     const { monday, sunday } = getWeekBounds(date);
     const range = `${monday.getMonth() + 1}月${monday.getDate()}日 — ${sunday.getMonth() + 1}月${sunday.getDate()}日`;
     const ci = getCycleInfo(monday, this.settings.cycleMode);
     const cycleId = `${weekId.split("-")[0]}-${ci.cycle}`;
-    const weekOfCycle = ci.weekOfCycle;
+    const weekOfCycle = String(ci.weekOfCycle);
+
+    const custom = await this.readTemplateFile(this.settings.templates?.weekly || "", {
+      weekId, range, cycleId, weekOfCycle,
+      cycleName: cycleId.split("-")[1]
+    });
+    if (custom !== null) return custom;
+
     return [
       `# ${weekId}（${range}）`,
       ``,
@@ -3126,7 +3141,7 @@ export default class ActWorkspacePlugin extends Plugin {
     const path = `${this.F.weekly}/${weekId}.md`;
     const existing = this.app.vault.getAbstractFileByPath(path);
     if (existing instanceof TFile) return existing;
-    await this.app.vault.create(path, this.buildWeeklyTemplate(weekId));
+    await this.app.vault.create(path, await this.buildWeeklyTemplate(weekId));
     const created = this.app.vault.getAbstractFileByPath(path);
     if (created instanceof TFile) return created;
     throw new Error(`Failed to create weekly note: ${path}`);
@@ -3192,10 +3207,36 @@ export default class ActWorkspacePlugin extends Plugin {
     await this.openPathInSide(path);
   }
 
+  private async readTemplateFile(path: string, vars?: Record<string, string>): Promise<string | null> {
+    if (!path) return null;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return null;
+    let content = await this.app.vault.cachedRead(file);
+    if (vars) {
+      for (const [k, v] of Object.entries(vars)) {
+        content = content.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), v);
+      }
+    }
+    return content;
+  }
+
+  async buildTaskNoteContent(noteBody: string): Promise<string> {
+    const now = new Date();
+    const created = formatDateOnly(now);
+    const custom = await this.readTemplateFile(this.settings.templates?.taskNote || "", {
+      created, body: noteBody || ""
+    });
+    if (custom !== null) return custom;
+    return `---\ntags:\n  - a-任务笔记\ncreated: ${created}\nt-deadline:\npriority:\nAI 备注:\n---\n## 下步行动\n\n\n## 进展记录\n\n\n## 背景目标\n\n${noteBody ? `${noteBody}\n` : ""}`;
+  }
+
   async getDailyTemplate(): Promise<string> {
-    const templatePath = "+/_storage/42-template-模板/time-日志.md";
-    const templateFile = this.app.vault.getAbstractFileByPath(templatePath);
-    if (templateFile instanceof TFile) return await this.app.vault.cachedRead(templateFile);
+    const customPath = this.settings.templates?.daily;
+    const custom = await this.readTemplateFile(customPath || "");
+    if (custom !== null) return custom;
+    const fallbackPath = "+/_storage/42-template-模板/time-日志.md";
+    const fallback = this.app.vault.getAbstractFileByPath(fallbackPath);
+    if (fallback instanceof TFile) return await this.app.vault.cachedRead(fallback);
     return `---\n已回顾: false\n---\n\n## 今日重点\n\n\n\n---\n\n## 今日总结\n\n\n\n---\n\n## 今日创建的笔记\n\n![[base-当日创建笔记.base]]\n`;
   }
 
@@ -3678,6 +3719,31 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
       });
   }
 
+  private templateSetting(container: HTMLElement, key: keyof TemplatePaths, label: string, desc: string) {
+    new Setting(container)
+      .setName(label)
+      .setDesc(desc)
+      .addSearch((search) => {
+        const files = this.plugin.app.vault.getMarkdownFiles().map((f) => f.path).sort();
+        const listId = `act-tpl-${key}`;
+        const optionsEl = container.createEl("datalist");
+        optionsEl.id = listId;
+        for (const p of files) {
+          optionsEl.createEl("option", { attr: { value: p } });
+        }
+        search.inputEl.setAttribute("list", listId);
+        search.inputEl.setAttribute("autocomplete", "off");
+        if (!this.plugin.settings.templates) this.plugin.settings.templates = { taskNote: "", weekly: "", daily: "" };
+        search
+          .setPlaceholder("留空使用内置模板")
+          .setValue(this.plugin.settings.templates[key])
+          .onChange(async (value) => {
+            this.plugin.settings.templates[key] = value;
+            await this.plugin.saveSettings();
+          });
+      });
+  }
+
   private renderActionTab(container: HTMLElement) {
     container.createDiv({
       text: "行动层对应的 Vault 文件夹路径。修改后需重新打开工作台生效。",
@@ -3689,6 +3755,9 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
     this.folderSetting(container, "activeAction", "活跃跟进", "跟进任务文件夹");
     this.folderSetting(container, "maybeAction", "将来也许", "暂缓任务文件夹");
     this.folderSetting(container, "thought", "闪念", "ACT 闪念文件夹");
+
+    container.createEl("h3", { text: "笔记模板" });
+    this.templateSetting(container, "taskNote", "任务笔记模板", "新建任务笔记时使用的模板文件，留空使用内置模板。");
 
     container.createEl("h3", { text: "任务清单" });
     new Setting(container)
@@ -3752,6 +3821,10 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
     this.folderSetting(container, "weekly", "周记", "每周周记文件夹");
     this.folderSetting(container, "cycle", "周期目标", "12 周/季度目标文件夹");
     this.folderSetting(container, "vision", "愿景", "长期愿景文件夹");
+
+    container.createEl("h3", { text: "笔记模板" });
+    this.templateSetting(container, "weekly", "周记模板", "新建周记时使用的模板文件，留空使用内置模板。");
+    this.templateSetting(container, "daily", "日志模板", "新建日志时使用的模板文件，留空使用内置模板。");
   }
 
   private renderCardTab(container: HTMLElement) {
