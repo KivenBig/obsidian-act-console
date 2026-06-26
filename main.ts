@@ -3555,10 +3555,9 @@ export default class ActWorkspacePlugin extends Plugin {
     const repo = this.getUpdateRepo();
     try {
       const resp = await requestUrl({
-        url: `https://api.github.com/repos/${repo}/releases/latest`,
-        headers: this.getUpdateHeaders(),
+        url: `https://raw.githubusercontent.com/${repo}/main/manifest.json`,
       });
-      const latest = resp.json.tag_name?.replace(/^v/, "") ?? "";
+      const latest = resp.json.version ?? "";
       if (!latest) throw new Error("无法获取最新版本号");
       return { hasUpdate: latest !== this.manifest.version, latest, current: this.manifest.version };
     } catch (err) {
@@ -3569,39 +3568,29 @@ export default class ActWorkspacePlugin extends Plugin {
 
   async performUpdate(): Promise<string> {
     const repo = this.getUpdateRepo();
-    const resp = await requestUrl({
-      url: `https://api.github.com/repos/${repo}/releases/latest`,
-      headers: this.getUpdateHeaders(),
+    const manifestResp = await requestUrl({
+      url: `https://raw.githubusercontent.com/${repo}/main/manifest.json`,
     });
-    const release = resp.json;
-    const latest = release.tag_name?.replace(/^v/, "") ?? "";
+    const latest = manifestResp.json.version ?? "";
     if (!latest) throw new Error("无法获取最新版本号");
     if (latest === this.manifest.version) return latest;
 
-    const assets: { name: string; browser_download_url: string }[] = release.assets ?? [];
     const pluginDir = this.manifest.dir;
     if (!pluginDir) throw new Error("无法确定插件目录");
 
     const filesToUpdate = ["main.js", "manifest.json", "styles.css"];
     let updated = 0;
     for (const filename of filesToUpdate) {
-      const asset = assets.find((a: { name: string }) => a.name === filename);
-      if (!asset) continue;
-      const dlHeaders: Record<string, string> = { "User-Agent": "act-workspace" };
-      const token = this.settings.updateToken?.trim();
-      if (token) {
-        dlHeaders["Authorization"] = `token ${token}`;
-        dlHeaders["Accept"] = "application/octet-stream";
-      }
-      const dlUrl = token
-        ? `https://api.github.com/repos/${repo}/releases/assets/${(asset as unknown as { id: number }).id}`
-        : asset.browser_download_url;
-      const fileResp = await requestUrl({ url: dlUrl, headers: dlHeaders });
-      await this.app.vault.adapter.writeBinary(`${pluginDir}/${filename}`, fileResp.arrayBuffer);
-      updated++;
+      try {
+        const fileResp = await requestUrl({
+          url: `https://github.com/${repo}/releases/latest/download/${filename}`,
+        });
+        await this.app.vault.adapter.writeBinary(`${pluginDir}/${filename}`, fileResp.arrayBuffer);
+        updated++;
+      } catch { /* file may not exist in release */ }
     }
 
-    if (updated === 0) throw new Error("Release 中未找到可更新的文件（需要 main.js / manifest.json）");
+    if (updated === 0) throw new Error("Release 中未找到可更新的文件");
     return latest;
   }
 
