@@ -1675,7 +1675,7 @@ class ActWorkspaceView extends ItemView {
       if (recordType === "下步行动") {
         await this.plugin.appendNextAction(task.filePath, text);
       } else {
-        await this.plugin.appendProgressToTask(task.filePath, recordType === "进展" ? text : `【${recordType}】${text}`);
+        await this.plugin.appendProgressToTask(task.filePath, `【${recordType}】${text}`);
       }
       this.progressDrafts[task.filePath] = { text: "", type: recordType };
       await this.plugin.saveSettings();
@@ -2513,11 +2513,11 @@ class ActWorkspaceView extends ItemView {
       { path: this.F.activeAction, id: "12" as const }
     ];
     const tasks: ActionTask[] = [];
+    const allMdFiles = this.app.vault.getMarkdownFiles();
     for (const folder of folders) {
-      const folderObj = this.app.vault.getAbstractFileByPath(folder.path);
-      if (!(folderObj instanceof TFolder)) continue;
-      for (const child of folderObj.children) {
-        if (!(child instanceof TFile) || child.extension !== "md") continue;
+      const prefix = folder.path + "/";
+      const folderFiles = allMdFiles.filter((f) => f.path.startsWith(prefix));
+      for (const child of folderFiles) {
         const content = await this.app.vault.cachedRead(child);
         const { tags, aiNote, personalNote, deadline, priority } = parseFrontmatterAction(content);
         if (!tags.includes("a-任务笔记")) continue;
@@ -3270,8 +3270,20 @@ export default class ActWorkspacePlugin extends Plugin {
     const custom = await this.readTemplateFile(this.settings.templates?.taskNote || "", {
       created, body: noteBody || ""
     });
-    if (custom !== null) return custom;
-    return `---\ntags:\n  - a-任务笔记\ncreated: ${created}\nt-deadline:\npriority:\nAI 备注:\n---\n## 下步行动\n\n\n## 进展记录\n\n\n## 背景目标\n\n${noteBody ? `${noteBody}\n` : ""}`;
+    let content = custom ?? `---\ntags:\n  - a-任务笔记\ncreated: ${created}\nt-deadline:\npriority:\nAI 备注:\n---\n## 下步行动\n\n\n## 进展记录\n\n\n## 背景目标\n`;
+    if (content.includes("created:") && !content.match(/created:\s*\S/)) {
+      content = content.replace(/created:[ \t]*/, `created: ${created}`);
+    }
+    if (noteBody) {
+      const fmEnd = content.indexOf("---", content.indexOf("---") + 3);
+      if (fmEnd !== -1) {
+        const insertAt = content.indexOf("\n", fmEnd) + 1;
+        content = content.slice(0, insertAt) + `\n${noteBody}\n` + content.slice(insertAt);
+      } else {
+        content = noteBody + "\n\n" + content;
+      }
+    }
+    return content;
   }
 
   async getDailyTemplate(): Promise<string> {
