@@ -3785,6 +3785,13 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
             this.plugin.settings.folders[key] = value;
             await this.plugin.saveSettings();
           });
+        search.inputEl.addEventListener("change", async () => {
+          const value = search.inputEl.value;
+          if (value !== this.plugin.settings.folders[key]) {
+            this.plugin.settings.folders[key] = value;
+            await this.plugin.saveSettings();
+          }
+        });
       });
   }
 
@@ -3810,6 +3817,13 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
             this.plugin.settings.templates[key] = value;
             await this.plugin.saveSettings();
           });
+        search.inputEl.addEventListener("change", async () => {
+          const value = search.inputEl.value;
+          if (value !== this.plugin.settings.templates[key]) {
+            this.plugin.settings.templates[key] = value;
+            await this.plugin.saveSettings();
+          }
+        });
       });
   }
 
@@ -3962,6 +3976,13 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
               this.plugin.settings.folders[ct.folderKey] = value;
               await this.plugin.saveSettings();
             });
+          search.inputEl.addEventListener("change", async () => {
+            const value = search.inputEl.value;
+            if (value !== this.plugin.settings.folders[ct.folderKey]) {
+              this.plugin.settings.folders[ct.folderKey] = value;
+              await this.plugin.saveSettings();
+            }
+          });
         });
     }
 
@@ -4001,6 +4022,13 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
               this.plugin.settings.dvPaths[item.key] = value;
               await this.plugin.saveSettings();
             });
+          search.inputEl.addEventListener("change", async () => {
+            const value = search.inputEl.value;
+            if (value !== this.plugin.settings.dvPaths[item.key]) {
+              this.plugin.settings.dvPaths[item.key] = value;
+              await this.plugin.saveSettings();
+            }
+          });
         });
     }
   }

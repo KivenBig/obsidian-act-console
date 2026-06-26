@@ -5,6 +5,7 @@
    ============================================================ */
 
 .act-root {
+  container-type: inline-size;
   --act-bg: #F4F6F3;
   --act-card: #FFFFFF;
   --act-card-dark: #1B3A2D;
@@ -1235,10 +1236,21 @@
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+.act-progress-input:hover {
+  background: var(--act-card);
+}
+
 .act-progress-input:focus {
+  background: var(--act-card);
   border-color: var(--act-green);
   box-shadow: 0 0 0 3px rgba(64, 145, 108, 0.15);
   outline: none;
+}
+
+.theme-dark .act-progress-input {
+  background: var(--act-card);
+  color: var(--act-text);
+  border-color: var(--act-border-strong);
 }
 
 .act-progress-actions {
@@ -2510,7 +2522,7 @@
 }
 
 /* ========= RESPONSIVE ========= */
-@media (max-width: 900px) {
+@container (max-width: 700px) {
   .act-root {
     padding: 16px;
   }
@@ -2892,7 +2904,7 @@
   gap: 14px;
 }
 
-@media (max-width: 900px) {
+@container (max-width: 700px) {
   .act-metrics-row {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -4413,4 +4425,23 @@
   0% { width: 20%; margin-left: 0; }
   50% { width: 50%; margin-left: 50%; }
   100% { width: 20%; margin-left: 0; }
+}
+
+/* ========= UPDATE NOTES ========= */
+.act-update-notes {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.act-update-notes-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.act-update-notes-item {
+  padding-left: 6px;
 }
