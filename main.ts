@@ -3594,6 +3594,19 @@ export default class ActWorkspacePlugin extends Plugin {
     return latest;
   }
 
+  async fetchReleaseNotes(version: string): Promise<string> {
+    try {
+      const repo = this.getUpdateRepo();
+      const resp = await requestUrl({
+        url: `https://raw.githubusercontent.com/${repo}/main/releases.json`,
+      });
+      const notes: Record<string, string[]> = resp.json ?? {};
+      const items = notes[version];
+      if (items && items.length > 0) return items.join("\n");
+    } catch { /* ignore */ }
+    return "";
+  }
+
 }
 
 /* ========= SETTINGS TAB ========= */
@@ -3662,14 +3675,29 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
         const result = await this.plugin.checkForUpdate();
         if (result.hasUpdate) {
           statusEl.createSpan({ text: `发现新版本 v${result.latest}`, cls: "act-update-available" });
+          const preNotes = await this.plugin.fetchReleaseNotes(result.latest);
+          if (preNotes) {
+            const notesEl = statusEl.createDiv({ cls: "act-update-notes" });
+            for (const line of preNotes.split("\n")) {
+              notesEl.createDiv({ text: line, cls: "act-update-notes-item" });
+            }
+          }
           const updateBtn = statusEl.createEl("button", { text: "立即更新", cls: "act-update-btn is-primary" });
           updateBtn.addEventListener("click", async () => {
             updateBtn.disabled = true;
             updateBtn.textContent = "下载中...";
             try {
               const version = await this.plugin.performUpdate();
+              const notes = await this.plugin.fetchReleaseNotes(version);
               statusEl.empty();
               statusEl.createSpan({ text: `已更新到 v${version}，请重启 Obsidian 或重新加载插件`, cls: "act-update-success" });
+              if (notes) {
+                const notesEl = statusEl.createDiv({ cls: "act-update-notes" });
+                notesEl.createDiv({ text: "更新内容：", cls: "act-update-notes-title" });
+                for (const line of notes.split("\n")) {
+                  notesEl.createDiv({ text: line, cls: "act-update-notes-item" });
+                }
+              }
               new Notice(`ACT 工作台已更新到 v${version}，请重新加载插件`);
             } catch (err) {
               updateBtn.disabled = false;

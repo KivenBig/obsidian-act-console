@@ -4426,3 +4426,22 @@
   50% { width: 50%; margin-left: 50%; }
   100% { width: 20%; margin-left: 0; }
 }
+
+/* ========= UPDATE NOTES ========= */
+.act-update-notes {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.act-update-notes-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.act-update-notes-item {
+  padding-left: 6px;
+}
