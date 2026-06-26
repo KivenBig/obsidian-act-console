@@ -91,7 +91,7 @@ const QUICK_SKILLS: SkillShortcut[] = [];
 
 /* ========= THEME ========= */
 
-type CycleMode = "monthly" | "weekly";
+type CycleMode = "monthly" | "weekly" | "weekly13";
 
 interface CycleInfo {
   cycle: string;
@@ -161,6 +161,7 @@ interface ActWorkspaceSettings {
   hideCompletedNotes: boolean;
   cardVisibility: Record<string, boolean>;
   templates: TemplatePaths;
+  refreshInterval: number;
 }
 
 const DEFAULT_FOLDERS: FolderPaths = {
@@ -217,7 +218,8 @@ const DEFAULT_SETTINGS: ActWorkspaceSettings = {
   updateToken: "",
   hideCompletedNotes: false,
   cardVisibility: { mainCard: true, bibCard: true, indexCard: true, newCard: false },
-  templates: { taskNote: "", weekly: "", daily: "" }
+  templates: { taskNote: "", weekly: "", daily: "" },
+  refreshInterval: 30
 };
 
 function pad(n: number): string {
@@ -306,6 +308,10 @@ function getCycleInfo(date: Date, mode: CycleMode): CycleInfo {
     return { cycle, weekOfCycle, totalWeeks };
   }
   const weekNum = getWeekNumber(date);
+  if (mode === "weekly13") {
+    const cycle = weekNum <= 13 ? "Y1" : weekNum <= 26 ? "Y2" : weekNum <= 39 ? "Y3" : "Y4";
+    return { cycle, weekOfCycle: ((weekNum - 1) % 13) + 1, totalWeeks: 13 };
+  }
   const cycle = weekNum <= 12 ? "Y1" : weekNum <= 24 ? "Y2" : weekNum <= 36 ? "Y3" : "Y4";
   return { cycle, weekOfCycle: ((weekNum - 1) % 12) + 1, totalWeeks: 12 };
 }
@@ -507,7 +513,7 @@ function parseProgressMarkerTime(marker: string): number {
 }
 
 function extractProgressTypeTag(text: string): { tag: string; body: string } {
-  const match = text.match(/^【(判断|卡点|情绪|下一步)】\s*/);
+  const match = text.match(/^【(判断|卡点|情绪|下步行动|下一步)】\s*/);
   if (match) return { tag: match[1], body: text.slice(match[0].length).trim() };
   return { tag: "", body: text };
 }
@@ -1029,19 +1035,35 @@ class ActWorkspaceView extends ItemView {
   getDisplayText() { return "ACT 工作台"; }
   getIcon() { return "layout-dashboard"; }
 
+  private refreshIntervalId: number | null = null;
+
   async onOpen() {
-    this.registerEvent(this.app.vault.on("modify", () => this.requestRender()));
-    this.registerEvent(this.app.vault.on("create", () => this.requestRender()));
-    this.registerEvent(this.app.vault.on("delete", () => this.requestRender()));
-    this.registerEvent(this.app.vault.on("rename", () => this.requestRender()));
     this.renderStartupPlaceholder();
     this.requestRender(STARTUP_RENDER_DELAY_MS);
+    this.startRefreshInterval();
   }
 
   async onClose() {
     if (this.renderTimer !== null) {
       window.clearTimeout(this.renderTimer);
       this.renderTimer = null;
+    }
+    this.stopRefreshInterval();
+  }
+
+  startRefreshInterval() {
+    this.stopRefreshInterval();
+    const seconds = this.plugin.settings.refreshInterval;
+    if (seconds <= 0) return;
+    this.refreshIntervalId = window.setInterval(() => {
+      void this.render();
+    }, seconds * 1000);
+  }
+
+  private stopRefreshInterval() {
+    if (this.refreshIntervalId !== null) {
+      window.clearInterval(this.refreshIntervalId);
+      this.refreshIntervalId = null;
     }
   }
 
@@ -1616,7 +1638,7 @@ class ActWorkspaceView extends ItemView {
     let recordType = draft.type;
     const saveDraft = () => { this.progressDrafts[task.filePath] = draft; this.plugin.saveSettings(); };
     const typeRow = editor.createDiv({ cls: "act-progress-type-row" });
-    for (const type of ["进展", "判断", "卡点", "情绪", "下一步"]) {
+    for (const type of ["进展", "判断", "卡点", "情绪", "下步行动"]) {
       const chip = typeRow.createEl("button", { text: type, cls: `act-progress-type ${type === recordType ? "is-active" : ""}`, attr: { type: "button" } });
       chip.addEventListener("click", () => {
         recordType = type;
@@ -1649,9 +1671,13 @@ class ActWorkspaceView extends ItemView {
     const save = btnGroup.createEl("button", { text: "保存", cls: "act-progress-save", attr: { type: "button" } });
     save.addEventListener("click", async () => {
       const text = input.value.trim();
-      if (!text) { new Notice("先写一点进展"); input.focus(); return; }
-      await this.plugin.appendProgressToTask(task.filePath, recordType === "进展" ? text : `【${recordType}】${text}`);
-      delete this.progressDrafts[task.filePath];
+      if (!text) { new Notice("先写点内容"); input.focus(); return; }
+      if (recordType === "下步行动") {
+        await this.plugin.appendNextAction(task.filePath, text);
+      } else {
+        await this.plugin.appendProgressToTask(task.filePath, recordType === "进展" ? text : `【${recordType}】${text}`);
+      }
+      this.progressDrafts[task.filePath] = { text: "", type: recordType };
       await this.plugin.saveSettings();
       await this.render();
     });
@@ -2316,14 +2342,15 @@ class ActWorkspaceView extends ItemView {
     const cyclePath = `${this.F.cycle}/${year}-${yearCycle}.md`;
     const weekOfCycle = ci.weekOfCycle;
 
-    const section = this.section(container, `${year}-${yearCycle} 十二周目标`, "方向 · 目标", "dark");
+    const cycleLabel = ci.totalWeeks === 12 ? "十二周目标" : `${ci.totalWeeks}周目标`;
+    const section = this.section(container, `${year}-${yearCycle} ${cycleLabel}`, "方向 · 目标", "dark");
     this.sectionInfo(section, {
       source: cyclePath,
       rule: "读取周期文件中 ### G1 - / G2 - 格式的目标，自动识别目标区块内的 [[双链]] 并匹配行动模块中的任务笔记（需有 a-任务笔记 标签）。点击任务名可跳转到行动模块。",
       props: [
         { name: "### G1/G2/G3", desc: "目标标题" },
         { name: "[[任务名]]", desc: "目标区块内的双链，自动关联任务笔记" },
-        { name: "进度条", desc: "当前周数 / 12 周" }
+        { name: "进度条", desc: `当前周数 / ${ci.totalWeeks} 周` }
       ]
     });
     this.smallAction(section, "打开目标笔记", () => this.plugin.openPath(cyclePath));
@@ -3151,6 +3178,23 @@ export default class ActWorkspacePlugin extends Plugin {
     await this.openPathInSide(path);
   }
 
+  async appendNextAction(path: string, text: string) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      new Notice("未找到任务笔记");
+      return;
+    }
+    await this.app.vault.process(file, (content) => {
+      const section = getNextActionSection(content);
+      const todoLine = `- [ ] ${text}`;
+      if (!section) return content + `\n## 下步行动\n\n${todoLine}\n`;
+      const lines = content.split("\n");
+      lines.splice(section.end, 0, todoLine);
+      return lines.join("\n");
+    });
+    new Notice("已添加到下步行动");
+  }
+
   async appendProgressToTask(path: string, text: string) {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
@@ -3805,6 +3849,28 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
+
+    container.createEl("h3", { text: "数据刷新" });
+    new Setting(container)
+      .setName("自动刷新间隔（秒）")
+      .setDesc("工作台面板多久自动刷新一次数据。设为 0 则关闭自动刷新，仅在打开时加载。")
+      .addText((text) => {
+        text.setPlaceholder("30");
+        text.setValue(String(this.plugin.settings.refreshInterval));
+        text.inputEl.type = "number";
+        text.inputEl.min = "0";
+        text.inputEl.max = "3600";
+        text.inputEl.style.width = "80px";
+        text.onChange(async (value) => {
+          const num = Math.max(0, Math.min(3600, parseInt(value) || 0));
+          this.plugin.settings.refreshInterval = num;
+          await this.plugin.saveSettings();
+          const leaf = this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+          if (leaf?.view instanceof ActWorkspaceView) {
+            (leaf.view as ActWorkspaceView).startRefreshInterval();
+          }
+        });
+      });
   }
 
   private renderTimeTab(container: HTMLElement) {
@@ -3814,6 +3880,7 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
       .addDropdown((dropdown) => {
         dropdown.addOption("monthly", "按季度月份（推荐）");
         dropdown.addOption("weekly", "严格 12 周");
+        dropdown.addOption("weekly13", "12+1 周");
         dropdown.setValue(this.plugin.settings.cycleMode);
         dropdown.onChange(async (value) => {
           this.plugin.settings.cycleMode = value as CycleMode;
