@@ -160,6 +160,8 @@ interface ActWorkspaceSettings {
   updateToken: string;
   hideCompletedNotes: boolean;
   cardVisibility: Record<string, boolean>;
+  cardSearchMode: Record<string, "folder" | "tag">;
+  cardTags: Record<string, string>;
   templates: TemplatePaths;
   refreshInterval: number;
 }
@@ -218,6 +220,8 @@ const DEFAULT_SETTINGS: ActWorkspaceSettings = {
   updateToken: "",
   hideCompletedNotes: false,
   cardVisibility: { mainCard: true, bibCard: true, indexCard: true, newCard: false },
+  cardSearchMode: {},
+  cardTags: {},
   templates: { taskNote: "", weekly: "", daily: "" },
   refreshInterval: 30
 };
@@ -1056,6 +1060,13 @@ class ActWorkspaceView extends ItemView {
     const seconds = this.plugin.settings.refreshInterval;
     if (seconds <= 0) return;
     this.refreshIntervalId = window.setInterval(() => {
+      // 用户正在工作台内的输入框中打字时跳过本次刷新，避免焦点被夺走
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        this.containerEl.contains(active) &&
+        (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement)
+      ) return;
       void this.render();
     }, seconds * 1000);
   }
@@ -1539,9 +1550,7 @@ class ActWorkspaceView extends ItemView {
           "任务标题",
           "补充背景、目标或约束...",
           async ({ title, body: noteBody }) => {
-            const now = new Date();
-            const datePrefix = `${String(now.getFullYear()).slice(2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-            const path = `${choice.path}/${datePrefix}-${safeFileName(title)}.md`;
+            const path = `${choice.path}/${safeFileName(title)}.md`;
             const content = await this.plugin.buildTaskNoteContent(noteBody);
             await this.app.vault.create(path, content);
             this.selectedProgressTaskPath = path;
@@ -1561,9 +1570,7 @@ class ActWorkspaceView extends ItemView {
       "任务标题",
       "补充背景、目标或约束...",
       async ({ title, body: noteBody }) => {
-        const now = new Date();
-        const datePrefix = `${String(now.getFullYear()).slice(2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-        const path = `${tab.folder}/${datePrefix}-${safeFileName(title)}.md`;
+        const path = `${tab.folder}/${safeFileName(title)}.md`;
         const content = await this.plugin.buildTaskNoteContent(noteBody);
         await this.app.vault.create(path, content);
         await this.render();
@@ -1636,7 +1643,16 @@ class ActWorkspaceView extends ItemView {
     });
     const draft = this.progressDrafts[task.filePath] ?? { text: "", type: "进展" };
     let recordType = draft.type;
+    let draftSaveTimer: number | null = null;
     const saveDraft = () => { this.progressDrafts[task.filePath] = draft; this.plugin.saveSettings(); };
+    // 输入防抖：避免每敲一个键就写一次 data.json
+    const saveDraftDebounced = () => {
+      if (draftSaveTimer !== null) window.clearTimeout(draftSaveTimer);
+      draftSaveTimer = window.setTimeout(() => {
+        draftSaveTimer = null;
+        saveDraft();
+      }, 400);
+    };
     const typeRow = editor.createDiv({ cls: "act-progress-type-row" });
     for (const type of ["进展", "判断", "卡点", "情绪", "下步行动"]) {
       const chip = typeRow.createEl("button", { text: type, cls: `act-progress-type ${type === recordType ? "is-active" : ""}`, attr: { type: "button" } });
@@ -1656,7 +1672,14 @@ class ActWorkspaceView extends ItemView {
     input.value = draft.text;
     input.addEventListener("input", () => {
       draft.text = input.value;
-      saveDraft();
+      saveDraftDebounced();
+    });
+    input.addEventListener("blur", () => {
+      if (draftSaveTimer !== null) {
+        window.clearTimeout(draftSaveTimer);
+        draftSaveTimer = null;
+        saveDraft();
+      }
     });
     const btnGroup = inputRow.createDiv({ cls: "act-progress-btn-group" });
     let expanded = false;
@@ -2181,51 +2204,33 @@ class ActWorkspaceView extends ItemView {
       rule: "按子文件夹（主题索引 / 人物索引）分组展示。每张索引卡显示被核心卡 index 属性引用的次数。"
     });
 
-    const folder = this.app.vault.getAbstractFileByPath(this.F.indexCard);
-    if (!(folder instanceof TFolder)) {
-      this.empty(section, "索引卡文件夹不存在");
+    const mainCardFiles = this.getCardFiles("mainCard", this.F.mainCard);
+    const indexRefCounts = new Map<string, number>();
+    for (const file of mainCardFiles) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!fm?.["index"]) continue;
+      const indexVal = fm["index"];
+      const refs = Array.isArray(indexVal) ? indexVal : [indexVal];
+      for (const ref of refs) {
+        const name = String(ref).replace(/^\[\[|\]\]$/g, "").trim();
+        if (name) indexRefCounts.set(name, (indexRefCounts.get(name) ?? 0) + 1);
+      }
+    }
+
+    const allIndexFiles = this.getCardFiles("indexCard", this.F.indexCard)
+      .sort((a, b) => a.basename.localeCompare(b.basename, "zh-CN"));
+    if (allIndexFiles.length === 0) {
+      this.empty(section, "还没有索引卡");
       return;
     }
 
-    const mainFolder = this.app.vault.getAbstractFileByPath(this.F.mainCard);
-    const indexRefCounts = new Map<string, number>();
-    if (mainFolder instanceof TFolder) {
-      for (const file of this.collectMarkdownFiles(mainFolder)) {
-        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-        if (!fm?.["index"]) continue;
-        const indexVal = fm["index"];
-        const refs = Array.isArray(indexVal) ? indexVal : [indexVal];
-        for (const ref of refs) {
-          const name = String(ref).replace(/^\[\[|\]\]$/g, "").trim();
-          if (name) indexRefCounts.set(name, (indexRefCounts.get(name) ?? 0) + 1);
-        }
-      }
-    }
-
-    for (const child of folder.children.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) {
-      if (!(child instanceof TFolder)) continue;
-      const files = this.collectMarkdownFiles(child).sort((a, b) => a.basename.localeCompare(b.basename, "zh-CN"));
-      if (files.length === 0) continue;
-
-      const groupEl = section.createDiv({ cls: "act-index-group" });
-      groupEl.createDiv({ text: child.name.replace(/^[bkp]-/, "").replace(/-/g, " · "), cls: "act-index-group-label" });
-      const chipRow = groupEl.createDiv({ cls: "act-chip-row" });
-      for (const file of files) {
-        const count = indexRefCounts.get(file.basename) ?? 0;
-        const chip = chipRow.createEl("a", { cls: "act-index-chip", href: "#" });
-        chip.createSpan({ text: file.basename.replace(/^[kbp]\d*-/, ""), cls: "act-index-chip-name" });
-        if (count > 0) chip.createSpan({ text: String(count), cls: "act-index-chip-count" });
-        chip.addEventListener("click", (e) => { e.preventDefault(); this.plugin.openPath(file.path); });
-      }
-    }
-
-    const topLevelFiles = folder.children.filter((c) => c instanceof TFile && c.extension === "md") as TFile[];
-    if (topLevelFiles.length > 0) {
-      const chipRow = section.createDiv({ cls: "act-chip-row" });
-      for (const file of topLevelFiles) {
-        const chip = chipRow.createEl("a", { text: file.basename, cls: "act-index-chip", href: "#" });
-        chip.addEventListener("click", (e) => { e.preventDefault(); this.plugin.openPath(file.path); });
-      }
+    const chipRow = section.createDiv({ cls: "act-chip-row" });
+    for (const file of allIndexFiles) {
+      const count = indexRefCounts.get(file.basename) ?? 0;
+      const chip = chipRow.createDiv({ cls: "act-index-chip is-clickable" });
+      chip.createSpan({ text: file.basename.replace(/^[kbp]\d*-/, ""), cls: "act-index-chip-name" });
+      if (count > 0) chip.createSpan({ text: String(count), cls: "act-index-chip-count" });
+      chip.addEventListener("click", () => this.plugin.openPath(file.path));
     }
   }
 
@@ -2254,8 +2259,7 @@ class ActWorkspaceView extends ItemView {
 
     const stats = section.createDiv({ cls: "act-analytics-platforms" });
     for (const f of folders) {
-      const folder = this.app.vault.getAbstractFileByPath(f.path);
-      const count = folder instanceof TFolder ? this.collectMarkdownFiles(folder).length : 0;
+      const count = this.getCardFiles(f.key, f.path).length;
       const card = stats.createDiv({ cls: `act-platform-card${f.dv ? " is-clickable" : ""}` });
       card.setAttribute("data-color", f.color);
       card.createDiv({ text: String(count), cls: "act-platform-value" });
@@ -2278,9 +2282,8 @@ class ActWorkspaceView extends ItemView {
     });
 
     const allCards: TFile[] = [];
-    for (const folderPath of [this.F.mainCard, this.F.bibCard]) {
-      const folder = this.app.vault.getAbstractFileByPath(folderPath);
-      if (folder instanceof TFolder) allCards.push(...this.collectMarkdownFiles(folder));
+    for (const cardKey of ["mainCard", "bibCard"] as const) {
+      allCards.push(...this.getCardFiles(cardKey, this.F[cardKey]));
     }
     allCards.sort((a, b) => b.stat.mtime - a.stat.mtime);
     const recent = allCards.slice(0, 5);
@@ -2299,7 +2302,8 @@ class ActWorkspaceView extends ItemView {
     ];
     const rows: { data: Record<string, string>; onClick: () => void }[] = [];
     for (const file of recent) {
-      const isMain = file.path.startsWith(this.F.mainCard);
+      const mainFiles = this.getCardFiles("mainCard", this.F.mainCard);
+      const isMain = mainFiles.some((f) => f.path === file.path);
       const fm = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
       const indexVal = fm["index"];
       let indexStr = "—";
@@ -2458,6 +2462,23 @@ class ActWorkspaceView extends ItemView {
 
   private async renderWeeklyHistory(container: HTMLElement) {
     const section = this.section(container, "最近周记", "方向 · 周记");
+
+    const nextWeekDate = new Date();
+    nextWeekDate.setDate(nextWeekDate.getDate() + 7);
+    const nextWeekId = formatWeekId(nextWeekDate);
+    const nextWeekPath = `${this.F.weekly}/${nextWeekId}.md`;
+    const nextWeekExists = this.app.vault.getAbstractFileByPath(nextWeekPath) instanceof TFile;
+    const btnRow = section.createDiv({ cls: "act-section-actions" });
+    if (nextWeekExists) {
+      this.smallAction(btnRow, `打开 ${nextWeekId}`, () => this.plugin.openPath(nextWeekPath));
+    } else {
+      this.smallAction(btnRow, `新建 ${nextWeekId}`, async () => {
+        await this.plugin.ensureWeeklyFile(nextWeekId);
+        await this.plugin.openPath(nextWeekPath);
+        await this.render();
+      });
+    }
+
     this.sectionInfo(section, {
       source: `${this.F.weekly} 最近 8 周`,
       rule: "匹配文件名 YYYY-Wxx.md，按文件名倒序。读取 [本周计划] 区块统计已完成/未完成任务数。",
@@ -2551,6 +2572,23 @@ class ActWorkspaceView extends ItemView {
       if (child instanceof TFolder) files.push(...this.collectMarkdownFiles(child));
     }
     return files;
+  }
+
+  private getCardFiles(key: string, folderPath: string): TFile[] {
+    const mode = this.plugin.settings.cardSearchMode[key] || "folder";
+    if (mode === "tag") {
+      const tag = this.plugin.settings.cardTags[key];
+      if (!tag) return [];
+      return this.app.vault.getMarkdownFiles().filter((f) => {
+        const cache = this.app.metadataCache.getFileCache(f);
+        const t = cache?.frontmatter?.tags;
+        if (!t) return false;
+        return Array.isArray(t) ? t.includes(tag) : t === tag;
+      });
+    }
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!(folder instanceof TFolder)) return [];
+    return this.collectMarkdownFiles(folder);
   }
 
   private section(container: HTMLElement, title: string, label = "", theme = ""): HTMLElement {
@@ -2665,6 +2703,8 @@ export default class ActWorkspacePlugin extends Plugin {
       else if (template === "{weeklyFolder}/{weekId}.md") this.settings.dida.completedLogTarget = "weekly";
       else this.settings.dida.completedLogTarget = "custom";
     }
+    this.settings.cardSearchMode = Object.assign({}, saved?.cardSearchMode);
+    this.settings.cardTags = Object.assign({}, saved?.cardTags);
     this.settings.progressLog = Object.assign({}, DEFAULT_PROGRESS_LOG, saved?.progressLog);
     if ((this.settings.terminalMode as string) === "termy") this.settings.terminalMode = "terminal";
   }
@@ -2781,7 +2821,7 @@ export default class ActWorkspacePlugin extends Plugin {
   async updateDidaTask(task: DidaTask, title: string, content: string, dueDate?: string, dueTime?: string, priority?: string): Promise<boolean> {
     const token = await this.getDidaApiToken();
     if (!token) {
-      new Notice("滴答清单 Access Token 不可用，请先配置 .obsidian/dida-token");
+      new Notice("滴答清单 Access Token 不可用，请在插件设置 → 滴答清单中配置");
       return false;
     }
     const projectId = task.projectId ?? "inbox";
@@ -2824,7 +2864,7 @@ export default class ActWorkspacePlugin extends Plugin {
   async deleteDidaTask(taskId: string, projectId: string): Promise<boolean> {
     const token = await this.getDidaApiToken();
     if (!token) {
-      new Notice("滴答清单 Access Token 不可用，请先配置 .obsidian/dida-token");
+      new Notice("滴答清单 Access Token 不可用，请在插件设置 → 滴答清单中配置");
       return false;
     }
     try {
@@ -2846,7 +2886,7 @@ export default class ActWorkspacePlugin extends Plugin {
   async createDidaTask(title: string, content: string, dueDate?: string, dueTime?: string, priority?: string): Promise<boolean> {
     const token = await this.getDidaApiToken();
     if (!token) {
-      new Notice("滴答清单 Access Token 不可用，请先配置 .obsidian/dida-token");
+      new Notice("滴答清单 Access Token 不可用，请在插件设置 → 滴答清单中配置");
       return false;
     }
     const dateTime = dueDate ? this.buildDidaDateTime(dueDate, dueTime) : null;
@@ -3004,9 +3044,12 @@ export default class ActWorkspacePlugin extends Plugin {
 
       const newEntries: string[] = [];
       for (const item of items) {
-        const tagId = `${item.noteBasename}::${item.text.slice(0, 30)}`.replace(/[<>]/g, "");
+        const tagId = `${item.noteBasename}::${item.text}`.replace(/[<>]/g, "");
         const commentTag = `<!-- action:${tagId} -->`;
-        if (content.includes(commentTag)) continue;
+        // 兼容旧版 30 字符截断的去重标签，避免历史条目被重复同步
+        const legacyTagId = `${item.noteBasename}::${item.text.slice(0, 30)}`.replace(/[<>]/g, "");
+        const legacyCommentTag = `<!-- action:${legacyTagId} -->`;
+        if (content.includes(commentTag) || content.includes(legacyCommentTag)) continue;
         newEntries.push(`- [x] ${item.source}：${item.text}（${item.noteBasename}） ✅ ${dateKey} ${commentTag}`);
       }
       if (newEntries.length === 0) continue;
@@ -3164,7 +3207,7 @@ export default class ActWorkspacePlugin extends Plugin {
     ].join("\n");
   }
 
-  private async ensureWeeklyFile(weekId: string): Promise<TFile> {
+  async ensureWeeklyFile(weekId: string): Promise<TFile> {
     const path = `${this.F.weekly}/${weekId}.md`;
     const existing = this.app.vault.getAbstractFileByPath(path);
     if (existing instanceof TFile) return existing;
@@ -3227,17 +3270,17 @@ export default class ActWorkspacePlugin extends Plugin {
 
   async openPathInSide(path: string) {
     if (path.includes("#")) {
-      await this.app.workspace.openLinkText(path, "", "split");
+      await this.app.workspace.openLinkText(path, "", false);
       return;
     }
     const file = this.app.vault.getAbstractFileByPath(path);
     if (file instanceof TFile) {
-      const leaf = this.app.workspace.getLeaf("split", "vertical");
+      const leaf = this.app.workspace.getLeaf(false);
       await leaf.openFile(file);
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
       return;
     }
-    await this.app.workspace.openLinkText(path, "", "split");
+    await this.app.workspace.openLinkText(path, "", false);
   }
 
   async openOrCreateDaily(path: string) {
@@ -3489,9 +3532,11 @@ export default class ActWorkspacePlugin extends Plugin {
   private buildSkillCommand(skillName: string): string {
     const vaultPath = this.getVaultBasePath() ?? ".";
     const template = this.settings.skillCommandTemplate || DEFAULT_SETTINGS.skillCommandTemplate;
+    // 模板中 {{skill}} 位于单引号内，转义 skill 名中的单引号防止命令被截断
+    const safeSkill = skillName.replace(/'/g, "'\\''");
     return template
       .replace(/\{\{vault\}\}/g, shellQuote(vaultPath))
-      .replace(/\{\{skill\}\}/g, skillName);
+      .replace(/\{\{skill\}\}/g, safeSkill);
   }
 
   async copyText(text: string, notice = "已复制") {
@@ -3555,6 +3600,45 @@ export default class ActWorkspacePlugin extends Plugin {
     return headers;
   }
 
+  // 从 Release 附件读取 manifest.json，保证「检查到的版本」与「实际下载的文件」来自同一发布
+  private async fetchLatestReleaseVersion(repo: string): Promise<string> {
+    const resp = await requestUrl({
+      url: `https://github.com/${repo}/releases/latest/download/manifest.json`,
+      headers: this.getUpdateHeaders()
+    });
+    const latest = resp.json?.version ?? "";
+    if (!latest) throw new Error("无法获取最新版本号");
+    return latest;
+  }
+
+  private async sha256Hex(data: ArrayBuffer): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  // 读取 Release 附件 checksums.json；旧版 Release 没有该文件时返回 null（跳过校验）
+  private async fetchReleaseChecksums(repo: string): Promise<Record<string, string> | null> {
+    try {
+      const resp = await requestUrl({
+        url: `https://github.com/${repo}/releases/latest/download/checksums.json`,
+        headers: this.getUpdateHeaders()
+      });
+      const data = resp.json;
+      if (data && typeof data === "object") return data as Record<string, string>;
+    } catch { /* 旧 Release 无 checksums.json */ }
+    return null;
+  }
+
+  private isNewerVersion(latest: string, current: string): boolean {
+    const a = latest.split(".").map((n) => parseInt(n) || 0);
+    const b = current.split(".").map((n) => parseInt(n) || 0);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const diff = (a[i] ?? 0) - (b[i] ?? 0);
+      if (diff !== 0) return diff > 0;
+    }
+    return false;
+  }
+
   async checkForUpdate(): Promise<{ hasUpdate: boolean; latest: string; current: string }> {
     const now = Date.now();
     this.updateCheckTimes = this.updateCheckTimes.filter((t) => now - t < UPDATE_CHECK_INTERVAL_MS);
@@ -3564,14 +3648,9 @@ export default class ActWorkspacePlugin extends Plugin {
       throw new Error(`请 ${remain} 秒后再试`);
     }
     this.updateCheckTimes.push(now);
-    const repo = this.getUpdateRepo();
     try {
-      const resp = await requestUrl({
-        url: `https://raw.githubusercontent.com/${repo}/main/manifest.json`,
-      });
-      const latest = resp.json.version ?? "";
-      if (!latest) throw new Error("无法获取最新版本号");
-      return { hasUpdate: latest !== this.manifest.version, latest, current: this.manifest.version };
+      const latest = await this.fetchLatestReleaseVersion(this.getUpdateRepo());
+      return { hasUpdate: this.isNewerVersion(latest, this.manifest.version), latest, current: this.manifest.version };
     } catch (err) {
       this.updateCheckTimes.pop();
       throw err;
@@ -3580,29 +3659,53 @@ export default class ActWorkspacePlugin extends Plugin {
 
   async performUpdate(): Promise<string> {
     const repo = this.getUpdateRepo();
-    const manifestResp = await requestUrl({
-      url: `https://raw.githubusercontent.com/${repo}/main/manifest.json`,
-    });
-    const latest = manifestResp.json.version ?? "";
-    if (!latest) throw new Error("无法获取最新版本号");
-    if (latest === this.manifest.version) return latest;
+    const latest = await this.fetchLatestReleaseVersion(repo);
+    if (!this.isNewerVersion(latest, this.manifest.version)) return latest;
 
     const pluginDir = this.manifest.dir;
     if (!pluginDir) throw new Error("无法确定插件目录");
 
-    const filesToUpdate = ["main.js", "manifest.json", "styles.css"];
-    let updated = 0;
-    for (const filename of filesToUpdate) {
+    // 先把所有文件下载到内存，全部成功后再写盘，避免部分更新导致版本错位
+    const requiredFiles = ["main.js", "manifest.json"];
+    const optionalFiles = ["styles.css"];
+    const downloaded = new Map<string, ArrayBuffer>();
+
+    for (const filename of requiredFiles) {
+      const fileResp = await requestUrl({
+        url: `https://github.com/${repo}/releases/latest/download/${filename}`,
+        headers: this.getUpdateHeaders()
+      });
+      if (!fileResp.arrayBuffer || fileResp.arrayBuffer.byteLength === 0) {
+        throw new Error(`下载的 ${filename} 为空，已取消更新`);
+      }
+      downloaded.set(filename, fileResp.arrayBuffer);
+    }
+    for (const filename of optionalFiles) {
       try {
         const fileResp = await requestUrl({
           url: `https://github.com/${repo}/releases/latest/download/${filename}`,
+          headers: this.getUpdateHeaders()
         });
-        await this.app.vault.adapter.writeBinary(`${pluginDir}/${filename}`, fileResp.arrayBuffer);
-        updated++;
-      } catch { /* file may not exist in release */ }
+        if (fileResp.arrayBuffer && fileResp.arrayBuffer.byteLength > 0) {
+          downloaded.set(filename, fileResp.arrayBuffer);
+        }
+      } catch { /* styles.css 可以不存在 */ }
     }
 
-    if (updated === 0) throw new Error("Release 中未找到可更新的文件");
+    // SHA-256 完整性校验：Release 提供 checksums.json 时逐一比对，不匹配立即中止
+    const checksums = await this.fetchReleaseChecksums(repo);
+    if (checksums) {
+      for (const [filename, data] of downloaded) {
+        const expected = checksums[filename]?.toLowerCase();
+        if (!expected) throw new Error(`checksums.json 中缺少 ${filename} 的校验值，已取消更新`);
+        const actual = await this.sha256Hex(data);
+        if (actual !== expected) throw new Error(`${filename} 校验失败（文件可能已损坏或被篡改），已取消更新`);
+      }
+    }
+
+    for (const [filename, data] of downloaded) {
+      await this.app.vault.adapter.writeBinary(`${pluginDir}/${filename}`, data);
+    }
     return latest;
   }
 
@@ -3611,6 +3714,7 @@ export default class ActWorkspacePlugin extends Plugin {
       const repo = this.getUpdateRepo();
       const resp = await requestUrl({
         url: `https://raw.githubusercontent.com/${repo}/main/releases.json`,
+        headers: this.getUpdateHeaders()
       });
       const notes: Record<string, string[]> = resp.json ?? {};
       const items = notes[version];
@@ -3947,7 +4051,7 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
 
   private renderCardTab(container: HTMLElement) {
     container.createDiv({
-      text: "知识层对应的 Vault 文件夹路径。修改后需重新打开工作台生效。",
+      text: "知识层卡片来源配置。每种卡片可选择按文件夹或按标签搜索，修改后需重新打开工作台生效。",
       cls: "setting-item-description"
     });
 
@@ -3960,6 +4064,8 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
     for (const ct of cardTypes) {
       const vis = this.plugin.settings.cardVisibility ?? {};
       const isVisible = vis[ct.key] !== false;
+      const mode = this.plugin.settings.cardSearchMode[ct.key] || "folder";
+
       new Setting(container)
         .setName(ct.label)
         .setDesc(ct.desc)
@@ -3971,31 +4077,58 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
           });
           toggle.toggleEl.setAttribute("aria-label", "在前端显示");
         })
-        .addSearch((search) => {
-          const folders = this.getVaultFolders();
-          const listId = `act-card-folder-${ct.key}`;
-          const optionsEl = container.createEl("datalist");
-          optionsEl.id = listId;
-          for (const folder of folders) {
-            optionsEl.createEl("option", { attr: { value: folder.path } });
-          }
-          search.inputEl.setAttribute("list", listId);
-          search.inputEl.setAttribute("autocomplete", "off");
-          search
-            .setPlaceholder(DEFAULT_FOLDERS[ct.folderKey] || "留空则不显示")
-            .setValue(this.plugin.settings.folders[ct.folderKey])
-            .onChange(async (value) => {
-              this.plugin.settings.folders[ct.folderKey] = value;
-              await this.plugin.saveSettings();
-            });
-          search.inputEl.addEventListener("change", async () => {
-            const value = search.inputEl.value;
-            if (value !== this.plugin.settings.folders[ct.folderKey]) {
-              this.plugin.settings.folders[ct.folderKey] = value;
-              await this.plugin.saveSettings();
-            }
+        .addDropdown((dropdown) => {
+          dropdown.addOption("folder", "按文件夹");
+          dropdown.addOption("tag", "按标签");
+          dropdown.setValue(mode);
+          dropdown.onChange(async (value) => {
+            this.plugin.settings.cardSearchMode[ct.key] = value as "folder" | "tag";
+            await this.plugin.saveSettings();
+            this.display();
           });
         });
+
+      if (mode === "folder") {
+        new Setting(container)
+          .setDesc("文件夹路径")
+          .addSearch((search) => {
+            const folders = this.getVaultFolders();
+            const listId = `act-card-folder-${ct.key}`;
+            const optionsEl = container.createEl("datalist");
+            optionsEl.id = listId;
+            for (const folder of folders) {
+              optionsEl.createEl("option", { attr: { value: folder.path } });
+            }
+            search.inputEl.setAttribute("list", listId);
+            search.inputEl.setAttribute("autocomplete", "off");
+            search
+              .setPlaceholder(DEFAULT_FOLDERS[ct.folderKey] || "留空则不显示")
+              .setValue(this.plugin.settings.folders[ct.folderKey])
+              .onChange(async (value) => {
+                this.plugin.settings.folders[ct.folderKey] = value;
+                await this.plugin.saveSettings();
+              });
+            search.inputEl.addEventListener("change", async () => {
+              const value = search.inputEl.value;
+              if (value !== this.plugin.settings.folders[ct.folderKey]) {
+                this.plugin.settings.folders[ct.folderKey] = value;
+                await this.plugin.saveSettings();
+              }
+            });
+          });
+      } else {
+        new Setting(container)
+          .setDesc("标签名称（不含 #）")
+          .addText((text) => {
+            text
+              .setPlaceholder("例如：c-核心卡")
+              .setValue(this.plugin.settings.cardTags[ct.key] || "")
+              .onChange(async (value) => {
+                this.plugin.settings.cardTags[ct.key] = value;
+                await this.plugin.saveSettings();
+              });
+          });
+      }
     }
 
     container.createEl("h3", { text: "数据视图跳转" });
