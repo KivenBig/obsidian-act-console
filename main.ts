@@ -336,6 +336,24 @@ function normalizeInlineText(input: string): string {
   return input.replace(/-->/g, "").replace(/\s+/g, " ").trim();
 }
 
+function normalizeHeadingLine(input: string): string {
+  return input
+    .trim()
+    .replace(/^(?:>\s*)+/, "")
+    .replace(/^\[![^\]]+\][+-]?\s*/, "")
+    .trim();
+}
+
+function parseGoalHeading(input: string): { id: string; title: string } | null {
+  const line = normalizeHeadingLine(input);
+  const match = line.match(/^#{1,6}\s+(G\s*\d+)(?:\s*[-–—：:]\s*|\s+)(.+?)\s*$/i);
+  if (!match) return null;
+  return {
+    id: match[1].replace(/\s+/g, "").toUpperCase(),
+    title: match[2].trim()
+  };
+}
+
 function shellQuote(input: string): string {
   return `'${input.replace(/'/g, "'\\''")}'`;
 }
@@ -1045,6 +1063,18 @@ class ActWorkspaceView extends ItemView {
     this.renderStartupPlaceholder();
     this.requestRender(STARTUP_RENDER_DELAY_MS);
     this.startRefreshInterval();
+    this.registerEvent(this.app.vault.on("modify", (file) => {
+      if (file instanceof TFile && this.isCycleNotePath(file.path)) this.requestRender();
+    }));
+    this.registerEvent(this.app.vault.on("create", (file) => {
+      if (this.isCycleNotePath(file.path)) this.requestRender();
+    }));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      if (this.isCycleNotePath(file.path)) this.requestRender();
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (this.isCycleNotePath(file.path) || this.isCycleNotePath(oldPath)) this.requestRender();
+    }));
   }
 
   async onClose() {
@@ -1076,6 +1106,11 @@ class ActWorkspaceView extends ItemView {
       window.clearInterval(this.refreshIntervalId);
       this.refreshIntervalId = null;
     }
+  }
+
+  private isCycleNotePath(path: string): boolean {
+    const folder = this.F.cycle.replace(/\/+$/, "");
+    return path === folder || path.startsWith(`${folder}/`);
   }
 
   private requestRender(delay = RENDER_DEBOUNCE_MS) {
@@ -2350,9 +2385,10 @@ class ActWorkspaceView extends ItemView {
     const section = this.section(container, `${year}-${yearCycle} ${cycleLabel}`, "方向 · 目标", "dark");
     this.sectionInfo(section, {
       source: cyclePath,
-      rule: "读取周期文件中 ### G1 - / G2 - 格式的目标，自动识别目标区块内的 [[双链]] 并匹配行动模块中的任务笔记（需有 a-任务笔记 标签）。点击任务名可跳转到行动模块。",
+      rule: "读取周期文件中 ### G1 - / G2 - 格式的目标，支持普通标题、引用块和 Callout 标题。同一周期内每个 G 编号必须唯一；重复编号不会同时展示，会优先保留包含任务双链的目标。自动识别目标区块内的 [[双链]] 并匹配行动模块中的任务笔记（需有 a-任务笔记 标签）。",
       props: [
-        { name: "### G1/G2/G3", desc: "目标标题" },
+        { name: "### G1/G2/G3", desc: "目标标题；同一周期内 G 编号必须唯一" },
+        { name: "编号唯一性", desc: "G1、G2、G3…不得重复" },
         { name: "[[任务名]]", desc: "目标区块内的双链，自动关联任务笔记" },
         { name: "进度条", desc: `当前周数 / ${ci.totalWeeks} 周` }
       ]
@@ -2381,11 +2417,11 @@ class ActWorkspaceView extends ItemView {
     const goalSections: { id: string; title: string; links: string[] }[] = [];
     let current: { id: string; title: string; links: string[] } | null = null;
     for (const line of lines) {
-      const goalMatch = line.match(/^###\s+(G\s*\d+)\s*[-–—：:]\s*(.+)/);
-      if (goalMatch) {
+      const goalHeading = parseGoalHeading(line);
+      if (goalHeading) {
         if (current) goalSections.push(current);
-        current = { id: goalMatch[1].replace(/\s+/g, ""), title: goalMatch[2].trim(), links: [] };
-      } else if (line.match(/^###?\s+/) && current) {
+        current = { ...goalHeading, links: [] };
+      } else if (/^#{2,6}\s+/.test(normalizeHeadingLine(line)) && current) {
         goalSections.push(current);
         current = null;
       }
@@ -2399,12 +2435,19 @@ class ActWorkspaceView extends ItemView {
     }
     if (current) goalSections.push(current);
 
-    if (goalSections.length === 0) {
+    const goalsById = new Map<string, { id: string; title: string; links: string[] }>();
+    for (const goal of goalSections) {
+      const existing = goalsById.get(goal.id);
+      if (!existing || goal.links.length >= existing.links.length) goalsById.set(goal.id, goal);
+    }
+    const uniqueGoals = [...goalsById.values()];
+
+    if (uniqueGoals.length === 0) {
       this.empty(section, "目标笔记中未找到 G1/G2/G3 格式的目标");
       return;
     }
 
-    for (const goal of goalSections) {
+    for (const goal of uniqueGoals) {
       const goalBox = section.createDiv({ cls: "act-goal-box" });
       const goalHead = goalBox.createDiv({ cls: "act-goal-head" });
       goalHead.createSpan({ text: goal.id, cls: "act-badge" });
