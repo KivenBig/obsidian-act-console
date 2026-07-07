@@ -141,6 +141,7 @@ interface ProgressLogSettings {
 
 interface TemplatePaths {
   taskNote: string;
+  cycle: string;
   weekly: string;
   daily: string;
 }
@@ -222,7 +223,7 @@ const DEFAULT_SETTINGS: ActWorkspaceSettings = {
   cardVisibility: { mainCard: true, bibCard: true, indexCard: true, newCard: false },
   cardSearchMode: {},
   cardTags: {},
-  templates: { taskNote: "", weekly: "", daily: "" },
+  templates: { taskNote: "", cycle: "", weekly: "", daily: "" },
   refreshInterval: 30
 };
 
@@ -1344,7 +1345,10 @@ class ActWorkspaceView extends ItemView {
     const todayStr = formatDateOnly(today);
     const weekId = formatWeekId(today);
     const weekPath = `${this.F.weekly}/${weekId}.md`;
-    this.smallAction(section, "本周完成", () => this.plugin.openPath(weekPath));
+    this.smallAction(section, "本周完成", async () => {
+      await this.plugin.ensureWeeklyFile(weekId);
+      await this.plugin.openPath(weekPath);
+    });
     this.sectionInfo(section, {
       source: weekPath,
       rule: "统一从周记读取。点击滴答清单区域的「任务更新」按钮可同步滴答清单 + 行动文件夹的完成记录到周记。来源识别：滴答清单：→ 滴答；聚焦/跟进/也许：→ 对应行动来源；其他 → 计划。"
@@ -2213,7 +2217,12 @@ class ActWorkspaceView extends ItemView {
     const row = section.createDiv({ cls: "act-flow" });
     for (const step of steps) {
       const el = row.createEl("button", { text: step.label, cls: `act-flow-step ${step.done ? "is-done" : ""} ${step.current ? "is-active" : ""}` });
-      el.addEventListener("click", () => this.plugin.openPath(step.path));
+      el.addEventListener("click", async () => {
+        if (step.path === weekPath) await this.plugin.ensureWeeklyFile(weekId);
+        if (step.path === cyclePath) await this.plugin.ensureCycleFile(year, yearCycle);
+        if (step.path === nextCyclePath) await this.plugin.ensureCycleFile(nextCycle.year, nextCycle.cycle);
+        await this.plugin.openPath(step.path);
+      });
     }
     const current = steps.find((s) => s.current);
     section.createDiv({ text: current ? `现在应关注：${current.label}` : "本周流程已完成，继续执行策略", cls: "act-hint" });
@@ -2393,7 +2402,11 @@ class ActWorkspaceView extends ItemView {
         { name: "进度条", desc: `当前周数 / ${ci.totalWeeks} 周` }
       ]
     });
-    this.smallAction(section, "打开目标笔记", () => this.plugin.openPath(cyclePath));
+    this.smallAction(section, "打开目标笔记", async () => {
+      await this.plugin.ensureCycleFile(year, yearCycle);
+      await this.plugin.openPath(cyclePath);
+      await this.render();
+    });
 
     const file = this.app.vault.getAbstractFileByPath(cyclePath);
     if (!(file instanceof TFile)) {
@@ -2513,7 +2526,10 @@ class ActWorkspaceView extends ItemView {
     const nextWeekExists = this.app.vault.getAbstractFileByPath(nextWeekPath) instanceof TFile;
     const btnRow = section.createDiv({ cls: "act-section-actions" });
     if (nextWeekExists) {
-      this.smallAction(btnRow, `打开 ${nextWeekId}`, () => this.plugin.openPath(nextWeekPath));
+      this.smallAction(btnRow, `打开 ${nextWeekId}`, async () => {
+        await this.plugin.ensureWeeklyFile(nextWeekId);
+        await this.plugin.openPath(nextWeekPath);
+      });
     } else {
       this.smallAction(btnRow, `新建 ${nextWeekId}`, async () => {
         await this.plugin.ensureWeeklyFile(nextWeekId);
@@ -2740,6 +2756,7 @@ export default class ActWorkspacePlugin extends Plugin {
     this.settings.dvPaths = Object.assign({}, DEFAULT_DV_PATHS, saved?.dvPaths);
     this.settings.folders = Object.assign({}, DEFAULT_FOLDERS, saved?.folders);
     this.settings.dida = Object.assign({}, DEFAULT_DIDA, saved?.dida);
+    this.settings.templates = Object.assign({}, DEFAULT_SETTINGS.templates, saved?.templates);
     if (!saved?.dida?.completedLogTarget) {
       const template = this.settings.dida.completedLogPathTemplate;
       if (template === "{dailyFolder}/{dailyDate}.md") this.settings.dida.completedLogTarget = "daily";
@@ -3204,6 +3221,54 @@ export default class ActWorkspacePlugin extends Plugin {
     throw new Error(`Failed to create note: ${candidate}`);
   }
 
+  private async buildCycleTemplate(year: number, cycle: string): Promise<string> {
+    const cycleId = `${year}-${cycle}`;
+    const ci = getCycleInfo(new Date(), this.settings.cycleMode);
+    const custom = await this.readTemplateFile(this.settings.templates?.cycle || "", {
+      year: String(year),
+      cycle,
+      cycleId,
+      totalWeeks: String(ci.totalWeeks)
+    });
+    if (custom !== null) return custom;
+
+    return [
+      `# ${cycleId} | 十二周目标`,
+      ``,
+      `## 目标与策略`,
+      ``,
+      `### G1 - `,
+      ``,
+      `**成功标准**：`,
+      ``,
+      `- 关联任务：`,
+      ``,
+      `## 周执行记录`,
+      ``,
+      `## 调整记录`,
+      ``,
+      `## 周期总结`,
+      ``
+    ].join("\n");
+  }
+
+  async ensureCycleFile(year: number, cycle: string): Promise<TFile> {
+    const path = `${this.F.cycle}/${year}-${cycle}.md`;
+    await this.ensureVaultFolder(this.F.cycle);
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFile) {
+      const content = await this.app.vault.cachedRead(existing);
+      if (!content.trim()) {
+        await this.app.vault.modify(existing, await this.buildCycleTemplate(year, cycle));
+      }
+      return existing;
+    }
+    await this.app.vault.create(path, await this.buildCycleTemplate(year, cycle));
+    const created = this.app.vault.getAbstractFileByPath(path);
+    if (created instanceof TFile) return created;
+    throw new Error(`Failed to create cycle note: ${path}`);
+  }
+
   private async buildWeeklyTemplate(weekId: string): Promise<string> {
     const date = weekIdToDate(weekId);
     const { monday, sunday } = getWeekBounds(date);
@@ -3253,7 +3318,13 @@ export default class ActWorkspacePlugin extends Plugin {
   async ensureWeeklyFile(weekId: string): Promise<TFile> {
     const path = `${this.F.weekly}/${weekId}.md`;
     const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof TFile) return existing;
+    if (existing instanceof TFile) {
+      const content = await this.app.vault.cachedRead(existing);
+      if (!content.trim()) {
+        await this.app.vault.modify(existing, await this.buildWeeklyTemplate(weekId));
+      }
+      return existing;
+    }
     await this.app.vault.create(path, await this.buildWeeklyTemplate(weekId));
     const created = this.app.vault.getAbstractFileByPath(path);
     if (created instanceof TFile) return created;
@@ -3968,7 +4039,7 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
         }
         search.inputEl.setAttribute("list", listId);
         search.inputEl.setAttribute("autocomplete", "off");
-        if (!this.plugin.settings.templates) this.plugin.settings.templates = { taskNote: "", weekly: "", daily: "" };
+        if (!this.plugin.settings.templates) this.plugin.settings.templates = { taskNote: "", cycle: "", weekly: "", daily: "" };
         search
           .setPlaceholder("留空使用内置模板")
           .setValue(this.plugin.settings.templates[key])
@@ -4088,6 +4159,7 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
     this.folderSetting(container, "vision", "愿景", "长期愿景文件夹");
 
     container.createEl("h3", { text: "笔记模板" });
+    this.templateSetting(container, "cycle", "十二周目标模板", "点击“打开目标笔记”新建周期目标时使用；留空使用内置模板。支持 {{year}}、{{cycle}}、{{cycleId}}、{{totalWeeks}} 变量。");
     this.templateSetting(container, "weekly", "周记模板", "新建周记时使用的模板文件，留空使用内置模板。");
     this.templateSetting(container, "daily", "日志模板", "新建日志时使用的模板文件，留空使用内置模板。");
   }
