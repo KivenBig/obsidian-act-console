@@ -1,4 +1,10 @@
 {
+  "0.3.4": [
+    "· 新增：Skill 设置页补充 macOS 与 Windows 使用说明",
+    "· 优化：Windows 默认使用系统终端，Skill 指令采用 Windows 路径格式",
+    "· 提示：明确说明 Terminal 插件的 spawn python3 ENOENT 配置处理方式",
+    "· 简化：移除自定义命令模板，仅保留 Claude Code 与 Codex 预设"
+  ],
   "0.3.3": [
     "· 新增：十二周目标模板可在设置中配置",
     "· 新增：打开目标笔记时自动创建并应用模板",

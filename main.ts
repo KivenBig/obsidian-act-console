@@ -359,6 +359,14 @@ function shellQuote(input: string): string {
   return `'${input.replace(/'/g, "'\\''")}'`;
 }
 
+function getRuntimePlatform(): string | undefined {
+  return (globalThis as unknown as { process?: { platform?: string } }).process?.platform;
+}
+
+function windowsCmdQuote(input: string): string {
+  return `"${input.replace(/["^&|<>()]/g, "^$&").replace(/%/g, "%%")}"`;
+}
+
 function toAppleScriptString(input: string): string {
   return `"${input.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
@@ -2757,6 +2765,9 @@ export default class ActWorkspacePlugin extends Plugin {
     this.settings.folders = Object.assign({}, DEFAULT_FOLDERS, saved?.folders);
     this.settings.dida = Object.assign({}, DEFAULT_DIDA, saved?.dida);
     this.settings.templates = Object.assign({}, DEFAULT_SETTINGS.templates, saved?.templates);
+    if (!saved?.terminalMode && getRuntimePlatform() === "win32") {
+      this.settings.terminalMode = "system";
+    }
     if (!saved?.dida?.completedLogTarget) {
       const template = this.settings.dida.completedLogPathTemplate;
       if (template === "{dailyFolder}/{dailyDate}.md") this.settings.dida.completedLogTarget = "daily";
@@ -3646,11 +3657,13 @@ export default class ActWorkspacePlugin extends Plugin {
   private buildSkillCommand(skillName: string): string {
     const vaultPath = this.getVaultBasePath() ?? ".";
     const template = this.settings.skillCommandTemplate || DEFAULT_SETTINGS.skillCommandTemplate;
-    // 模板中 {{skill}} 位于单引号内，转义 skill 名中的单引号防止命令被截断
-    const safeSkill = skillName.replace(/'/g, "'\\''");
-    return template
-      .replace(/\{\{vault\}\}/g, shellQuote(vaultPath))
-      .replace(/\{\{skill\}\}/g, safeSkill);
+    const cli = template.includes("claude '") ? "claude" : "codex";
+
+    if (getRuntimePlatform() === "win32") {
+      return `cd /d ${windowsCmdQuote(vaultPath)} && ${cli} ${windowsCmdQuote(skillName)}`;
+    }
+
+    return `cd ${shellQuote(vaultPath)} && ${cli} ${shellQuote(skillName)}`;
   }
 
   async copyText(text: string, notice = "已复制") {
@@ -4384,7 +4397,9 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
   private renderSkillTab(container: HTMLElement) {
     new Setting(container)
       .setName("终端模式")
-      .setDesc("点击 Skill 按钮时打开哪个终端")
+      .setDesc(getRuntimePlatform() === "win32"
+        ? "Windows 推荐使用系统终端。若使用 Terminal 插件，需在其设置中将 Python 可执行文件配置为 python.exe 或 py.exe，否则会提示 spawn python3 ENOENT。"
+        : "点击 Skill 按钮时打开哪个终端")
       .addDropdown((dropdown) => {
         dropdown.addOption("terminal", "Terminal 插件");
         dropdown.addOption("system", "系统终端（macOS/Windows）");
@@ -4402,40 +4417,39 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
       .addDropdown((dropdown) => {
         dropdown.addOption("claude", "Claude Code（claude）");
         dropdown.addOption("codex", "Codex（codex）");
-        dropdown.addOption("custom", "自定义模板");
         const current = this.plugin.settings.skillCommandTemplate;
         if (current.includes("claude '")) dropdown.setValue("claude");
-        else if (current.includes("codex '")) dropdown.setValue("codex");
-        else dropdown.setValue("custom");
+        else dropdown.setValue("codex");
         dropdown.onChange(async (value) => {
           if (value === "claude") {
             this.plugin.settings.skillCommandTemplate = "cd {{vault}} && claude '{{skill}}'";
-          } else if (value === "codex") {
+          } else {
             this.plugin.settings.skillCommandTemplate = "cd {{vault}} && codex '{{skill}}'";
-          } else if (value === "custom") {
-            this.plugin.settings.skillCommandTemplate = "";
           }
           await this.plugin.saveSettings();
-          this.renderTabContent(container);
         });
       });
 
-    const isCustom = !this.plugin.settings.skillCommandTemplate.includes("claude '") &&
-      !this.plugin.settings.skillCommandTemplate.includes("codex '");
-    if (isCustom) {
-      new Setting(container)
-        .setName("自定义命令模板")
-        .setDesc("可用变量：{{vault}} = Vault 路径，{{skill}} = Skill 名称")
-        .addText((text) => {
-          text.setPlaceholder(DEFAULT_SETTINGS.skillCommandTemplate);
-          text.setValue(this.plugin.settings.skillCommandTemplate);
-          text.inputEl.style.width = "100%";
-          text.onChange(async (value) => {
-            this.plugin.settings.skillCommandTemplate = value;
-            await this.plugin.saveSettings();
-          });
-        });
-    }
+    const usageGuide = container.createDiv({ cls: "act-settings-guide act-skill-usage-guide" });
+    usageGuide.createEl("h4", { text: "Skill 使用说明" });
+
+    const macGuide = usageGuide.createDiv({ cls: "act-skill-usage-platform" });
+    macGuide.createEl("strong", { text: "macOS" });
+    const macSteps = macGuide.createEl("ul");
+    macSteps.createEl("li", { text: "推荐选择「Terminal 插件」或「系统终端」；系统终端会直接打开 macOS Terminal。" });
+    macSteps.createEl("li", { text: "请先在终端确认 claude --version 或 codex --version 能正常运行。" });
+
+    const windowsGuide = usageGuide.createDiv({ cls: "act-skill-usage-platform" });
+    windowsGuide.createEl("strong", { text: "Windows" });
+    const windowsSteps = windowsGuide.createEl("ul");
+    windowsSteps.createEl("li", { text: "推荐选择「系统终端」，插件会以 Windows 命令格式进入 Vault 后启动 Claude Code 或 Codex。" });
+    windowsSteps.createEl("li", { text: "若使用 Terminal 插件，请在该插件设置中把 Python 可执行文件设为 py.exe 或实际 python.exe 路径；出现 spawn python3 ENOENT 表示此项未配置。" });
+    windowsSteps.createEl("li", { text: "请先在 PowerShell 或命令提示符中确认 claude --version 或 codex --version 能正常运行。" });
+
+    const commonGuide = usageGuide.createDiv({ cls: "act-skill-usage-platform" });
+    commonGuide.createEl("strong", { text: "通用" });
+    const commonSteps = commonGuide.createEl("ul");
+    commonSteps.createEl("li", { text: "「仅复制命令」适合使用自己的终端插件或远程环境时手动粘贴运行。" });
 
     const skillListEl = container.createDiv({ cls: "act-settings-skill-list" });
     this.renderSkillList(skillListEl);
@@ -4532,6 +4546,22 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
       }
       .act-settings-guide ol {
         margin: 0;
+        padding-left: 20px;
+      }
+      .act-skill-usage-guide {
+        margin-bottom: 16px;
+      }
+      .act-skill-usage-platform + .act-skill-usage-platform {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--background-modifier-border);
+      }
+      .act-skill-usage-platform strong {
+        color: var(--text-normal);
+        font-size: 12px;
+      }
+      .act-skill-usage-platform ul {
+        margin: 4px 0 0;
         padding-left: 20px;
       }
       .act-support-card {
