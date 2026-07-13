@@ -84,6 +84,7 @@ interface SkillShortcut {
 }
 
 type TerminalMode = "terminal" | "system" | "copy";
+type NoteOpenMode = "split" | "tab";
 type ProgressLogFormat = "heading-time" | "bullet-time";
 type CompletedLogTarget = "weekly" | "daily" | "custom";
 
@@ -150,9 +151,11 @@ interface ActWorkspaceSettings {
   promptDrafts: Record<string, NotePromptValue>;
   progressDrafts: Record<string, { text: string; type: string }>;
   progressLog: ProgressLogSettings;
+  recentProgressLimit: 3 | 7 | 14;
   skillItems: SkillShortcut[];
   skillCommandTemplate: string;
   terminalMode: TerminalMode;
+  noteOpenMode: NoteOpenMode;
   cycleMode: CycleMode;
   dvPaths: DvPaths;
   folders: FolderPaths;
@@ -210,9 +213,11 @@ const DEFAULT_SETTINGS: ActWorkspaceSettings = {
   promptDrafts: {},
   progressDrafts: {},
   progressLog: { ...DEFAULT_PROGRESS_LOG },
+  recentProgressLimit: 3,
   skillItems: QUICK_SKILLS.map((s) => ({ ...s })),
   skillCommandTemplate: "cd {{vault}} && codex '{{skill}}'",
   terminalMode: "terminal",
+  noteOpenMode: "split",
   cycleMode: "monthly",
   dvPaths: { ...DEFAULT_DV_PATHS },
   folders: { ...DEFAULT_FOLDERS },
@@ -497,7 +502,8 @@ function extractProgressEntries(content: string, headingSetting = DEFAULT_PROGRE
   };
 
   for (const line of lines) {
-    const heading = line.match(/^#{3,6}\s+(.+)/);
+    const normalizedLine = normalizeHeadingLine(line);
+    const heading = normalizedLine.match(/^#{3,6}\s+(.+)/);
     if (heading) {
       pushCurrent();
       current = { marker: heading[1].trim(), text: "" };
@@ -512,8 +518,9 @@ function extractProgressEntries(content: string, headingSetting = DEFAULT_PROGRE
         continue;
       }
     }
-    if (current && line.trim()) {
-      current.text = current.text ? `${current.text}\n${line.trim()}` : line.trim();
+    const bodyLine = line.replace(/^(?:>\s?)+/, "").trim();
+    if (current && bodyLine) {
+      current.text = current.text ? `${current.text}\n${bodyLine}` : bodyLine;
     }
   }
   pushCurrent();
@@ -1818,17 +1825,34 @@ class ActWorkspaceView extends ItemView {
     // --- 最近进展 ---
     if (entries.length > 0) {
       const recentBox = container.createDiv({ cls: "act-workbench-recent" });
-      recentBox.createDiv({ text: "最近进展", cls: "act-workbench-section-title act-section-title" });
+      const recentHead = recentBox.createDiv({ cls: "act-workbench-recent-head" });
+      recentHead.createDiv({ text: "最近进展", cls: "act-workbench-section-title act-section-title" });
+      const limitControl = recentHead.createDiv({ cls: "act-progress-limit", attr: { "aria-label": "最近进展显示数量" } });
+      for (const limit of [3, 7, 14] as const) {
+        const limitButton = limitControl.createEl("button", {
+          text: `${limit} 条`,
+          cls: `act-progress-limit-button ${this.plugin.settings.recentProgressLimit === limit ? "is-active" : ""}`,
+          attr: { type: "button", "aria-label": `显示最近 ${limit} 条进展` }
+        });
+        limitButton.addEventListener("click", async () => {
+          if (this.plugin.settings.recentProgressLimit === limit) return;
+          this.plugin.settings.recentProgressLimit = limit;
+          await this.plugin.saveSettings();
+          await this.render();
+        });
+      }
+      const recentLimit = this.plugin.settings.recentProgressLimit;
       this.sectionInfo(recentBox, {
-        source: `任务笔记 → ${this.plugin.settings.progressLog.heading} 区块（最近 3 条）`,
-        rule: "识别两种格式：1) ### 标题 作为分段标记；2) 以日期开头的列表项（- YYYY-MM-DD HH:MM 内容 或 - [[YYYY-MM-DD（周几）]] 内容）。按时间倒序，仅显示最近 3 条。",
+        source: `任务笔记 → ${this.plugin.settings.progressLog.heading} 区块（最近 ${recentLimit} 条）`,
+        rule: `识别三种格式：1) ### 标题；2) > [!类型] ### 标题 的 Callout；3) 以日期开头的列表项。按时间倒序显示最近 ${recentLimit} 条。`,
         props: [
           { name: "### 标题", desc: "三级标题作为进展分段标记" },
+          { name: "> [!tip] ### 标题", desc: "Callout 中的标题和引用正文" },
           { name: "- YYYY-MM-DD HH:MM", desc: "日期时间开头的列表项" },
           { name: "- [[日期链接]]", desc: "Obsidian 日期双链开头的列表项" }
         ]
       });
-      for (const entry of entries.slice(0, 3)) {
+      for (const entry of entries.slice(0, recentLimit)) {
         const { tag, body: entryBody } = extractProgressTypeTag(entry.text);
         const item = recentBox.createDiv({ cls: `act-progress-entry ${tag ? `is-type-${tag}` : ""}` });
         const timeRow = item.createDiv({ cls: "act-progress-entry-time" });
@@ -2777,6 +2801,12 @@ export default class ActWorkspacePlugin extends Plugin {
     this.settings.cardSearchMode = Object.assign({}, saved?.cardSearchMode);
     this.settings.cardTags = Object.assign({}, saved?.cardTags);
     this.settings.progressLog = Object.assign({}, DEFAULT_PROGRESS_LOG, saved?.progressLog);
+    if (![3, 7, 14].includes(this.settings.recentProgressLimit)) {
+      this.settings.recentProgressLimit = DEFAULT_SETTINGS.recentProgressLimit;
+    }
+    if (!["split", "tab"].includes(this.settings.noteOpenMode)) {
+      this.settings.noteOpenMode = DEFAULT_SETTINGS.noteOpenMode;
+    }
     if ((this.settings.terminalMode as string) === "termy") this.settings.terminalMode = "terminal";
   }
 
@@ -3394,18 +3424,21 @@ export default class ActWorkspacePlugin extends Plugin {
   }
 
   async openPathInSide(path: string) {
+    const openMode = this.settings.noteOpenMode;
     if (path.includes("#")) {
-      await this.app.workspace.openLinkText(path, "", false);
+      await this.app.workspace.openLinkText(path, "", openMode);
       return;
     }
     const file = this.app.vault.getAbstractFileByPath(path);
     if (file instanceof TFile) {
-      const leaf = this.app.workspace.getLeaf(false);
+      const leaf = openMode === "split"
+        ? this.app.workspace.getLeaf("split", "vertical")
+        : this.app.workspace.getLeaf("tab");
       await leaf.openFile(file);
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
       return;
     }
-    await this.app.workspace.openLinkText(path, "", false);
+    await this.app.workspace.openLinkText(path, "", openMode);
   }
 
   async openOrCreateDaily(path: string) {
@@ -4071,6 +4104,20 @@ class ActWorkspaceSettingTab extends PluginSettingTab {
   }
 
   private renderActionTab(container: HTMLElement) {
+    container.createEl("h3", { text: "工作台交互" });
+    new Setting(container)
+      .setName("笔记打开方式")
+      .setDesc("选择从 ACT 工作台打开已有笔记或新建笔记时使用右侧分栏，还是新标签页。")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("split", "右侧分栏");
+        dropdown.addOption("tab", "新标签页");
+        dropdown.setValue(this.plugin.settings.noteOpenMode);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.noteOpenMode = value as NoteOpenMode;
+          await this.plugin.saveSettings();
+        });
+      });
+
     container.createDiv({
       text: "行动层对应的 Vault 文件夹路径。修改后需重新打开工作台生效。",
       cls: "setting-item-description"

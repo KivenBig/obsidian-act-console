@@ -3929,6 +3929,51 @@
   margin-top: 12px;
 }
 
+.act-workbench-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.act-workbench-recent-head .act-workbench-section-title {
+  margin-bottom: 0;
+}
+
+.act-progress-limit {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--act-border);
+  border-radius: 999px;
+  background: var(--act-bg-muted);
+}
+
+.act-progress-limit-button {
+  min-width: 44px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  color: var(--act-text-faint) !important;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: none !important;
+}
+
+.act-progress-limit-button:hover {
+  color: var(--act-text) !important;
+}
+
+.act-progress-limit-button.is-active {
+  background: var(--act-card-dark) !important;
+  color: var(--act-text-inv) !important;
+}
+
 .act-workbench-section-title {
   font-size: 11px;
   font-weight: 600;
